@@ -30,16 +30,17 @@ jobs:
 
       - name: Run Av1an
         run: |
-          # Define the duration limit if provided
-          LIMIT=""
+          # Setup FFmpeg seeking/duration if needed
+          FFMPEG_INPUT_ARGS="-ss ${{ github.event.inputs.start_time }}"
           if [ "${{ github.event.inputs.duration }}" != "0" ]; then
-            LIMIT="--seek ${{ github.event.inputs.start_time }} --length ${{ github.event.inputs.duration }}"
+            FFMPEG_INPUT_ARGS="$FFMPEG_INPUT_ARGS -t ${{ github.event.inputs.duration }}"
           fi
 
-          # Using Docker to run Av1an with all dependencies pre-installed
+          # Using Docker for Av1an
+          # Note: We pass seeking via -f (ffmpeg global/input args)
           docker run --rm -v $(pwd):/files masterofzen/av1an:latest \
             -i /files/source_file.mkv \
-            $LIMIT \
+            -f "$FFMPEG_INPUT_ARGS" \
             --verbose \
             --encoder svt-av1 \
             --video-params " --preset 6 --crf 55 --tune 0 --enable-tpl-la 1 --aq-mode 1 --enable-overlays 1 " \
