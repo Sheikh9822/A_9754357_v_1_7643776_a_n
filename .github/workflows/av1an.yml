@@ -174,7 +174,7 @@ jobs:
           # Reserve 1 for Docker/I/O orchestration, hand the rest to av1an
           if [ "$WORKERS" = "0" ]; then
             VCPUS=$(nproc)
-            WORKERS=$(( VCPUS > 1 ? VCPUS - 1 : 1 ))
+            WORKERS=$VCPUS
             echo "Auto-detected ${VCPUS} vCPUs → using ${WORKERS} parallel workers"
           fi
 
@@ -218,7 +218,7 @@ jobs:
               --verbose \
               $PHOTON_FLAG \
               --ffmpeg "-vf hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
-              --video-params "--preset ${PRESET} --crf ${CRF} --tune 0 --film-grain 0 --enable-tpl-la 1 --enable-overlays 1 --aq-mode 1" \
+              --video-params "--preset ${PRESET} --crf ${CRF} --tune 0 --film-grain 0 --enable-tpl-la 1 --enable-overlays 1 --aq-mode 1 --lp 1 --pin 1" \
               --audio-params "-c:a libopus -b:a ${AUDIO_BR} -vbr on" \
             &
           DOCKER_PID=$!
