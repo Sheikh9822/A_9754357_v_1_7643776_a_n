@@ -113,16 +113,9 @@ jobs:
     # -------------------------------------------------------------------------
     - name: Build and install SVT-AV1
       run: |
-        # Use the GitHub releases API with python3 for reliable JSON parsing
-        SVT_VERSION=$(curl -sf https://api.github.com/repos/AOMediaCodec/SVT-AV1/releases/latest \
-          | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
-
-        # Hard-coded fallback if the API call fails (rate-limit, network blip)
-        if [ -z "$SVT_VERSION" ]; then
-          SVT_VERSION="v2.3.0"
-          echo "Warning: API lookup failed, falling back to $SVT_VERSION"
-        fi
-
+        # Pinned release — update this tag when a new SVT-AV1 version ships.
+        # Avoid runtime API lookups: GitHub rate-limits unauthenticated runners.
+        SVT_VERSION="v2.3.0"
         echo "Building SVT-AV1 $SVT_VERSION ..."
 
         git clone --depth 1 --branch "$SVT_VERSION" \
