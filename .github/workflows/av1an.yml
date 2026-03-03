@@ -1,12 +1,20 @@
 # =============================================================================
-# Ultra-Low Size AV1 Encode (Anime Edition) — av1an + libaom-av1
+# Ultra-Low Size AV1 Encode — av1an Docker Edition
 # Runner: ubuntu-latest (4 vCPU / 16 GB RAM / 14 GB SSD, x64)
 #
-# Uses the official masterofzen/av1an Docker image.
-# Optimized for Anime: 10-bit, SSIM tuning, Grain Synthesis, and Forward KFs.
+# Uses the official masterofzen/av1an Docker image — zero dependency setup.
+# The image ships av1an + SVT-AV1 + VapourSynth + L-SMASH Works pre-built.
+# av1an scene-detects and encodes all chunks in parallel across all 4 vCPUs.
+#
+# Runner specs (free & unlimited on public repositories)
+# ┌─────────────┬──────┬───────────┬──────────┬──────────────────────────────┐
+# │ OS          │ vCPU │ RAM       │ Storage  │ Workflow label               │
+# ├─────────────┼──────┼───────────┼──────────┼──────────────────────────────┤
+# │ Linux       │  4   │ 16 GB     │ 14 GB    │ ubuntu-latest / ubuntu-24.04 │
+# └─────────────┴──────┴───────────┴──────────┴──────────────────────────────┘
 # =============================================================================
 
-name: Ultra-Low Size AV1 Anime Encode (libaom)
+name: Ultra-Low Size AV1 Encode (av1an)
 
 on:
   workflow_dispatch:
@@ -14,12 +22,12 @@ on:
 
       # ── Source ──────────────────────────────────────────────────────────────
       video_url:
-        description: 'Direct link to source video (brackets[] are safe)'
+        description: 'Direct link to source video (brackets [] are safe)'
         required: true
 
       output_name:
         description: 'Output filename — do NOT include .mkv'
-        default: 'anime_encoded'
+        default: 'encoded_video'
         required: true
 
       # ── Trim ────────────────────────────────────────────────────────────────
@@ -33,31 +41,31 @@ on:
         default: '0'
         required: false
 
-      # ── Quality (libaom) ────────────────────────────────────────────────────
+      # ── Quality ─────────────────────────────────────────────────────────────
       crf:
-        description: 'CQ Level / Quality (libaom range 0-63, 24-26 recommended)'
-        default: '24'
+        description: 'CRF / quality  (SVT-AV1 range 0-63, lower = better)'
+        default: '55'
         required: false
 
       preset:
-        description: 'libaom cpu-used speed (0 slowest -> 9 fastest, 4 or 6 recommended)'
-        default: '4'
+        description: 'SVT-AV1 preset  (0 slowest -> 13 fastest)'
+        default: '6'
         required: false
 
       # ── av1an parallelism ───────────────────────────────────────────────────
       workers:
-        description: 'Parallel chunk workers (0 = auto-detect 4 workers for libaom)'
+        description: 'Parallel chunk workers  (0 = auto-detect from vCPU count)'
         default: '0'
         required: false
 
       chunk_method:
-        description: 'Chunk / demux method (ffms2 | hybrid | select | segment)'
+        description: 'Chunk / demux method  (ffms2 | hybrid | select | segment)'
         default: 'ffms2'
         required: false
 
       # ── Scene detection ─────────────────────────────────────────────────────
       sc_method:
-        description: 'Scene-change detection method (standard | fast | none)'
+        description: 'Scene-change detection method  (standard | fast | none)'
         default: 'standard'
         required: false
 
@@ -69,18 +77,18 @@ on:
       # ── Audio ───────────────────────────────────────────────────────────────
       audio_bitrate:
         description: 'Opus audio bitrate (e.g. 32k, 64k, 96k)'
-        default: '64k'
+        default: '32k'
         required: false
 
       # ── Grain synthesis ─────────────────────────────────────────────────────
-      grain_synth:
-        description: 'libaom denoise-noise-level (10 for digital anime, 15+ for cel, 0 = off)'
-        default: '10'
+      photon_noise:
+        description: 'Photon-noise / film-grain synthesis ISO (0 = disabled)'
+        default: '0'
         required: false
 
 jobs:
   encode-video:
-    name: 'libaom encode -> ${{ github.event.inputs.output_name }}.mkv'
+    name: 'av1an encode -> ${{ github.event.inputs.output_name }}.mkv'
     runs-on: ubuntu-latest   # 4 vCPU · 16 GB RAM · 14 GB SSD (x64)
 
     steps:
@@ -92,6 +100,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg mkvtoolnix
 
       # ── 2. Cache av1an Docker image ──────────────────────────────────────────
+      # The image is saved as a tar and restored on subsequent runs,
+      # skipping the ~1 GB Docker Hub pull entirely.
       - name: Cache av1an Docker Image
         id: cache-docker
         uses: actions/cache@v4
@@ -110,18 +120,10 @@ jobs:
             docker save masterofzen/av1an:latest -o /tmp/av1an-image.tar
           fi
 
-      # ── 3. Cache av1an Temp Folder (For Resuming) ────────────────────────────
-      - name: Cache av1an Resume Data
-        uses: actions/cache@v4
-        with:
-          path: av1an-tmp
-          key: av1an-resume-${{ github.run_id }}
-          restore-keys: |
-            av1an-resume-
-
       # ── 4. Download source video ─────────────────────────────────────────────
       - name: Download Source Video
         run: |
+          # -g disables glob expansion so brackets in URLs pass through safely
           curl -g -L --retry 3 --retry-delay 5 \
             "${{ github.event.inputs.video_url }}" \
             -o source_raw.mkv
@@ -136,8 +138,7 @@ jobs:
           START="${{ github.event.inputs.start_time }}"
           DURATION="${{ github.event.inputs.duration }}"
 
-          # FIXED: Added space between if and[
-          if [ "$START" = "00:00:00" ] &&[ "$DURATION" = "0" ]; then
+          if [ "$START" = "00:00:00" ] && [ "$DURATION" = "0" ]; then
             echo "No trimming requested — using full source."
             mv source_raw.mkv source.mkv
           else
@@ -145,6 +146,7 @@ jobs:
             DURATION_FLAG=""
             [ "$DURATION" != "0" ] && DURATION_FLAG="-t $DURATION"
 
+            # Stream-copy trim; avoids a full re-encode at this stage
             ffmpeg -y \
               -ss "$START" $DURATION_FLAG \
               -i source_raw.mkv \
@@ -156,39 +158,52 @@ jobs:
             ls -lh source.mkv
           fi
 
-      # ── 6. Encode with av1an via Docker (libaom-av1) ─────────────────────────
-      - name: Encode with av1an (Docker, libaom-av1, chunked parallel)
+      # ── 6. Encode with av1an via Docker ──────────────────────────────────────
+      - name: Encode with av1an (Docker, SVT-AV1, chunked parallel)
         run: |
           CRF="${{ github.event.inputs.crf }}"
           PRESET="${{ github.event.inputs.preset }}"
           WORKERS="${{ github.event.inputs.workers }}"
           SC_METHOD="${{ github.event.inputs.sc_method }}"
           MIN_SCENE="${{ github.event.inputs.min_scene_len }}"
-          GRAIN="${{ github.event.inputs.grain_synth }}"
+          PHOTON="${{ github.event.inputs.photon_noise }}"
           AUDIO_BR="${{ github.event.inputs.audio_bitrate }}"
           OUTPUT="${{ github.event.inputs.output_name }}.mkv"
 
+          # Worker auto-detect: ubuntu-latest = 4 vCPU
+          # Reserve 1 for Docker/I/O orchestration, hand the rest to av1an
           if [ "$WORKERS" = "0" ]; then
-            WORKERS=4
-            echo "Auto-detected libaom on 4 vCPUs → using 4 parallel workers (1 thread each)"
+            VCPUS=$(nproc)
+            WORKERS=$(( VCPUS / 2 ))
+            echo "Auto-detected ${VCPUS} vCPUs → using ${WORKERS} parallel workers (2 threads each)"
           fi
 
-          # FIXED: Added newline before the bracket
-          GRAIN_FLAG=""[ "$GRAIN" != "0" ] && GRAIN_FLAG="--denoise-noise-level=${GRAIN}"
+          # Optional photon-noise flag
+          PHOTON_FLAG=""
+          [ "$PHOTON" != "0" ] && PHOTON_FLAG="--photon-noise ${PHOTON}"
 
           echo "============================================"
           echo "  Image      : masterofzen/av1an:latest"
-          echo "  Encoder    : libaom-av1"
-          echo "  CQ Level   : $CRF"
-          echo "  CPU-Used   : $PRESET"
+          echo "  Encoder    : SVT-AV1"
+          echo "  CRF        : $CRF"
+          echo "  Preset     : $PRESET"
           echo "  Workers    : $WORKERS"
           echo "  Chunk      : ${{ github.event.inputs.chunk_method }}"
-          echo "  Grain      : ${GRAIN_FLAG:-disabled}"
+          echo "  SC method  : $SC_METHOD"
+          echo "  Min scene  : $MIN_SCENE frames"
+          echo "  Audio br   : $AUDIO_BR"
+          echo "  Photon     : ${PHOTON_FLAG:-disabled}"
           echo "  Output     : $OUTPUT"
           echo "============================================"
 
+          # Create a host-side temp dir — av1an writes done.json here so the
+          # progress poller can read it from outside the Docker container.
           mkdir -p "$PWD/av1an-tmp"
 
+          # Mount $PWD as /videos inside the container.
+          # --user preserves file ownership so the runner can read the output.
+          # --privileged is required by av1an for mkvmerge concat.
+          # Run encode in background so we can poll progress.
           docker run --rm --privileged \
             --user "$(id -u):$(id -g)" \
             -v "$PWD:/videos" \
@@ -196,7 +211,7 @@ jobs:
               -i /videos/source.mkv \
               -o "/videos/${OUTPUT}" \
               --temp /videos/av1an-tmp \
-              --encoder aom \
+              --encoder svt-av1 \
               --workers "$WORKERS" \
               --chunk-method "${{ github.event.inputs.chunk_method }}" \
               --sc-method "$SC_METHOD" \
@@ -206,12 +221,15 @@ jobs:
               --pix-format yuv420p10le \
               --resume \
               --verbose \
+              $PHOTON_FLAG \
               --ffmpeg "-vf hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
-              --video-params "--cpu-used=${PRESET} --cq-level=${CRF} --threads=1 --tune=ssim --enable-fwd-kf=1 --kf-max-dist=240 ${GRAIN_FLAG}" \
+              --video-params "--preset ${PRESET} --crf ${CRF} --tune 0 --film-grain 0 --enable-tpl-la 1 --enable-overlays 1 --aq-mode 1 --lp 2" \
               --audio-params "-c:a libopus -b:a ${AUDIO_BR} -vbr on" \
             &
           DOCKER_PID=$!
 
+          # Poll av1an's done.json every 30s — now readable on the host
+          # because the temp dir is mounted from $PWD/av1an-tmp.
           START_TS=$SECONDS
           while kill -0 $DOCKER_PID 2>/dev/null; do
             sleep 30
@@ -226,9 +244,10 @@ jobs:
             ELAPSED=$(( SECONDS - START_TS ))
             MINS=$(( ELAPSED / 60 ))
             SECS=$(( ELAPSED % 60 ))
-            echo "[${MINS}m ${SECS}s]  Chunks done: ${DONE}"
+            echo "  [${MINS}m ${SECS}s]  Chunks done: ${DONE}"
           done
 
+          # Propagate non-zero exit from docker run
           wait $DOCKER_PID
 
           echo "=== Encode complete ==="
@@ -239,9 +258,8 @@ jobs:
         run: |
           OUTPUT="${{ github.event.inputs.output_name }}.mkv"
 
-          # FIXED: Added space between if and [
           if [ ! -f "$OUTPUT" ]; then
-            echo "::error::Encoded file '$OUTPUT' not found! (Did it hit the 6-hour timeout?)"
+            echo "::error::Encoded file '$OUTPUT' not found!"
             exit 1
           fi
 
