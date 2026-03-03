@@ -184,6 +184,7 @@ jobs:
           # Mount $PWD as /videos inside the container.
           # --user preserves file ownership so the runner can read the output.
           # --privileged is required by av1an for mkvmerge concat.
+          # Run encode in background so we can poll progress
           docker run --rm --privileged \
             --user "$(id -u):$(id -g)" \
             -v "$PWD:/videos" \
@@ -203,7 +204,31 @@ jobs:
               $PHOTON_FLAG \
               --ffmpeg "-vf hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
               --video-params "--preset ${PRESET} --crf ${CRF} --tune 0 --film-grain 0 --enable-tpl-la 1 --enable-overlays 1 --aq-mode 1" \
-              --audio-params "-c:a libopus -b:a ${AUDIO_BR} -vbr on"
+              --audio-params "-c:a libopus -b:a ${AUDIO_BR} -vbr on" \
+            &
+          DOCKER_PID=$!
+
+          # Poll av1an's done.json every 30s and print plain-text progress
+          # (GitHub Actions swallows \r rewrites, so this is the only visible output)
+          START_TS=$SECONDS
+          while kill -0 $DOCKER_PID 2>/dev/null; do
+            sleep 30
+            DONE=$(find . -name "done.json" 2>/dev/null | head -1 | xargs python3 -c "
+          import sys, json
+          try:
+              d = json.load(open(sys.argv[1]))
+              print(len(d.get('done', {})))
+          except Exception:
+              print('?')
+          " 2>/dev/null || echo "?")
+            ELAPSED=$(( SECONDS - START_TS ))
+            MINS=$(( ELAPSED / 60 ))
+            SECS=$(( ELAPSED % 60 ))
+            echo "  [${MINS}m ${SECS}s]  Chunks done: ${DONE}"
+          done
+
+          # Propagate non-zero exit from docker run
+          wait $DOCKER_PID
 
           echo "=== Encode complete ==="
           ls -lh "$OUTPUT"
