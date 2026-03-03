@@ -30,14 +30,14 @@ jobs:
 
       - name: Run Av1an
         run: |
-          # Setup FFmpeg seeking/duration if needed
+          # Setup FFmpeg seeking/duration
           FFMPEG_INPUT_ARGS="-ss ${{ github.event.inputs.start_time }}"
           if [ "${{ github.event.inputs.duration }}" != "0" ]; then
             FFMPEG_INPUT_ARGS="$FFMPEG_INPUT_ARGS -t ${{ github.event.inputs.duration }}"
           fi
 
           # Using Docker for Av1an
-          # Note: We pass seeking via -f (ffmpeg global/input args)
+          # Changed --split-method to the newer syntax and used ffmpeg for scene detection
           docker run --rm -v $(pwd):/files masterofzen/av1an:latest \
             -i /files/source_file.mkv \
             -f "$FFMPEG_INPUT_ARGS" \
@@ -45,7 +45,7 @@ jobs:
             --encoder svt-av1 \
             --video-params " --preset 6 --crf 55 --tune 0 --enable-tpl-la 1 --aq-mode 1 --enable-overlays 1 " \
             --audio-params "-c:a libopus -b:a 32k" \
-            --split-method pyscene \
+            --sc-method ffmpeg \
             -o "/files/${{ github.event.inputs.output_name }}.mkv"
 
       - name: Cleanup Source
