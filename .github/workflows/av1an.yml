@@ -93,14 +93,7 @@ jobs:
 
     steps:
 
-      # ── 1. Cache apt packages (ffmpeg + mkvtoolnix) ─────────────────────────
-      - name: Cache APT Packages
-        id: cache-apt
-        uses: actions/cache@v4
-        with:
-          path: /var/cache/apt/archives
-          key: apt-ffmpeg-mkvtoolnix-${{ runner.os }}
-
+      # ── 1. Install FFmpeg ────────────────────────────────────────────────────
       - name: Install FFmpeg
         run: |
           sudo apt-get update -qq
