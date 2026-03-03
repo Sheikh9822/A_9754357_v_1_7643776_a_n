@@ -1,14 +1,19 @@
-##############################################################################
-# Ultra-Low Size AV1 Encode — Powered by av1an + SVT-AV1
-# Runner: ubuntu-latest (4 vCPU · 16 GB RAM · 14 GB SSD · x64)
+# =============================================================================
+# Ultra-Low Size AV1 Encode — av1an Edition
+# Runner: ubuntu-latest (4 vCPU / 16 GB RAM / 14 GB SSD, x64)
 #
-# av1an advantages over plain ffmpeg:
-#   • Automatic scene-change detection → smarter chunk splitting
-#   • True parallel tile/worker encoding (all 4 cores used efficiently)
-#   • Per-scene CRF budgeting for consistent visual quality
-#   • VMAF-based target-quality mode (optional)
-#   • Native resume support if a job is interrupted
-##############################################################################
+# av1an splits the source into scene-detected chunks and encodes them in
+# parallel, then concatenates the result — dramatically faster than a single
+# FFmpeg pass while preserving the same SVT-AV1 quality target.
+#
+# Required runner specs used by this workflow
+# ┌─────────────┬──────┬───────────┬──────────┬──────────────────────────────┐
+# │ OS          │ vCPU │ RAM       │ Storage  │ Workflow label               │
+# ├─────────────┼──────┼───────────┼──────────┼──────────────────────────────┤
+# │ Linux       │  4   │ 16 GB     │ 14 GB    │ ubuntu-latest / ubuntu-24.04 │
+# └─────────────┴──────┴───────────┴──────────┴──────────────────────────────┘
+# Free and unlimited for public repositories.
+# =============================================================================
 
 name: Ultra-Low Size AV1 Encode (av1an)
 
@@ -16,350 +21,354 @@ on:
   workflow_dispatch:
     inputs:
 
-      # ── Source ──────────────────────────────────────────────────────────
+      # ── Source ──────────────────────────────────────────────────────────────
       video_url:
-        description: 'Direct link to source video (supports brackets [ ])'
+        description: 'Direct link to source video (brackets [] are safe)'
         required: true
 
-      # ── Output ──────────────────────────────────────────────────────────
       output_name:
         description: 'Output filename — do NOT include .mkv'
         default: 'encoded_video'
         required: true
 
-      # ── Trim ────────────────────────────────────────────────────────────
+      # ── Trim ────────────────────────────────────────────────────────────────
       start_time:
-        description: 'Start time  (HH:MM:SS) — leave blank to start from 0'
+        description: 'Start time HH:MM:SS  (default = beginning)'
         default: '00:00:00'
         required: false
 
       duration:
-        description: 'Duration    (HH:MM:SS) — set 0 for full video'
+        description: 'Duration  HH:MM:SS  (0 = full video)'
         default: '0'
         required: false
 
-      # ── Encode quality ──────────────────────────────────────────────────
+      # ── Quality ─────────────────────────────────────────────────────────────
       crf:
-        description: 'CRF (1-63, lower = better quality / larger file)'
+        description: 'CRF / quality  (SVT-AV1 range 0-63, lower = better)'
         default: '55'
         required: false
 
       preset:
-        description: 'SVT-AV1 preset (0 slowest / 13 fastest — 4-8 recommended)'
+        description: 'SVT-AV1 preset  (0 slowest -> 13 fastest)'
         default: '6'
         required: false
 
-      # ── av1an chunking ──────────────────────────────────────────────────
+      # ── av1an parallelism ───────────────────────────────────────────────────
       workers:
-        description: 'Parallel encode workers (max 4 on this runner)'
-        default: '4'
-        required: false
-
-      scenes_split_method:
-        description: 'Scene split method: av-scenechange | none'
-        default: 'av-scenechange'
-        required: false
-
-      # ── VMAF target quality (optional) ──────────────────────────────────
-      target_vmaf:
-        description: 'VMAF target (0 = disabled, e.g. 90 for high quality)'
+        description: 'Parallel chunk workers  (0 = auto-detect from vCPU count)'
         default: '0'
         required: false
 
-      # ── Audio bitrate ────────────────────────────────────────────────────
+      chunk_method:
+        description: 'Chunk / demux method  (lsmash | ffms2 | hybrid | select | segment)'
+        default: 'lsmash'
+        required: false
+
+      # ── Scene detection ─────────────────────────────────────────────────────
+      sc_method:
+        description: 'Scene-change detection method  (standard | fast | none)'
+        default: 'standard'
+        required: false
+
+      min_scene_len:
+        description: 'Minimum scene length in frames (avoid tiny chunks)'
+        default: '24'
+        required: false
+
+      # ── Audio ───────────────────────────────────────────────────────────────
       audio_bitrate:
-        description: 'Opus audio bitrate per stream (e.g. 32k, 64k, 128k)'
+        description: 'Opus audio bitrate (e.g. 32k, 64k, 96k)'
         default: '32k'
         required: false
 
-##############################################################################
-# JOB
-##############################################################################
+      # ── Grain synthesis ─────────────────────────────────────────────────────
+      photon_noise:
+        description: 'Photon-noise / film-grain synthesis ISO (0 = disabled)'
+        default: '0'
+        required: false
+
 jobs:
   encode-video:
-    # ubuntu-latest -> 4 vCPU, 16 GB RAM, 14 GB SSD (free for public repos)
-    runs-on: ubuntu-latest
+    name: 'av1an encode -> ${{ github.event.inputs.output_name }}.mkv'
+    runs-on: ubuntu-latest   # 4 vCPU · 16 GB RAM · 14 GB SSD (x64), free for public repos
 
     steps:
-    # -------------------------------------------------------------------------
-    # 1. Install system dependencies
-    #    ffmpeg      - demux, audio encode, muxing
-    #    mkvtoolnix  - mkvmerge (av1an's recommended concat backend)
-    #    nasm/yasm   - required to compile SVT-AV1
-    #    NOTE: VapourSynth is NOT in the default Ubuntu apt repos.
-    #    We use --chunk-method segment instead, which drives chunking
-    #    purely via ffmpeg — no VapourSynth needed.
-    # -------------------------------------------------------------------------
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y --no-install-recommends \
-          ffmpeg \
-          mkvtoolnix \
-          python3-pip \
-          python3-dev \
-          nasm \
-          yasm \
-          git \
-          curl \
-          wget \
-          build-essential \
-          cmake \
-          pkg-config
 
-    # -------------------------------------------------------------------------
-    # 2. Build and install SVT-AV1
-    #    av1an calls SvtAv1EncApp directly — must be on PATH.
-    # -------------------------------------------------------------------------
-    - name: Build and install SVT-AV1
-      run: |
-        # Pinned release — update this tag when a new SVT-AV1 version ships.
-        # Avoid runtime API lookups: GitHub rate-limits unauthenticated runners.
-        SVT_VERSION="v2.3.0"
-        echo "Building SVT-AV1 $SVT_VERSION ..."
+      # ── 1. Free up disk space ────────────────────────────────────────────────
+      - name: Maximize Disk Space
+        run: |
+          echo "=== Disk before cleanup ==="
+          df -h
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /usr/local/lib/android \
+            "$AGENT_TOOLSDIRECTORY"
+          echo "=== Disk after cleanup ==="
+          df -h
 
-        git clone --depth 1 --branch "$SVT_VERSION" \
-          https://github.com/AOMediaCodec/SVT-AV1.git /tmp/svt-av1
-        cmake -S /tmp/svt-av1 -B /tmp/svt-av1/build \
-          -DCMAKE_BUILD_TYPE=Release \
-          -DBUILD_SHARED_LIBS=OFF \
-          -DNATIVE=ON
-        cmake --build /tmp/svt-av1/build --parallel "$(nproc)"
-        sudo cmake --install /tmp/svt-av1/build
-        SvtAv1EncApp --version
+      # ── 2. Install system dependencies ──────────────────────────────────────
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            mkvtoolnix \
+            python3 \
+            curl \
+            wget \
+            git \
+            unzip
 
-    # -------------------------------------------------------------------------
-    # 3. Install Rust and build av1an
-    # -------------------------------------------------------------------------
-    - name: Install Rust and build av1an
-      run: |
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-          | sh -s -- -y --default-toolchain stable
-        source "$HOME/.cargo/env"
-        cargo install av1an --locked
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        av1an --version
+      # ── 3. Install av1an binary ──────────────────────────────────────────────
+      - name: Install av1an
+        run: |
+          # Resolve latest pre-built static binary (Linux x86_64) from
+          # the official rust-av/Av1an GitHub releases page.
+          AV1AN_RELEASE_URL=$(
+            curl -fsSL https://api.github.com/repos/rust-av/Av1an/releases/latest \
+            | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for a in data['assets']:
+              name = a['name']
+              if 'x86_64' in name and ('Linux' in name or 'linux' in name):
+                  print(a['browser_download_url'])
+                  break
+          "
+          )
 
-    # -------------------------------------------------------------------------
-    # 4. Download source video
-    #    curl -g -> disables URL globbing (fixes bracket [ ] in URLs)
-    #    curl -L -> follow redirects
-    # -------------------------------------------------------------------------
-    - name: Download source video
-      run: |
-        echo "Downloading source..."
-        curl -g -L --retry 3 --retry-delay 5 \
-          "${{ github.event.inputs.video_url }}" \
-          -o source_input.mkv
-
-        echo "Download complete. File info:"
-        ffprobe -v quiet -print_format json -show_format -show_streams \
-          source_input.mkv | python3 -c "
-        import json, sys
-        d = json.load(sys.stdin)
-        fmt = d['format']
-        print(f'  Container : {fmt[\"format_long_name\"]}')
-        print(f'  Duration  : {float(fmt[\"duration\"]):.1f}s')
-        print(f'  Size      : {int(fmt[\"size\"]) / 1_048_576:.1f} MB')
-        for s in d['streams']:
-            if s['codec_type'] == 'video':
-                print(f'  Video     : {s[\"codec_name\"]} {s[\"width\"]}x{s[\"height\"]}')
-            elif s['codec_type'] == 'audio':
-                print(f'  Audio     : {s[\"codec_name\"]} {s.get(\"bit_rate\",\"?\")} bps')
-        "
-
-    # -------------------------------------------------------------------------
-    # 5. Optional trim — stream copy before av1an chunking
-    #    Trimming early reduces chunk count and total encode time.
-    # -------------------------------------------------------------------------
-    - name: Trim video (if requested)
-      run: |
-        START="${{ github.event.inputs.start_time }}"
-        DUR="${{ github.event.inputs.duration }}"
-
-        if [ "$START" = "00:00:00" ] && [ "$DUR" = "0" ]; then
-          echo "No trim requested — using source as-is."
-          mv source_input.mkv source_trimmed.mkv
-        else
-          DURATION_FLAG=""
-          if [ "$DUR" != "0" ]; then
-            DURATION_FLAG="-t $DUR"
+          if [ -z "$AV1AN_RELEASE_URL" ]; then
+            echo "::warning::Could not resolve latest release URL; trying known path"
+            AV1AN_RELEASE_URL="https://github.com/rust-av/Av1an/releases/latest/download/av1an-x86_64-Linux"
           fi
-          echo "Trimming: start=$START duration=${DUR:-full}"
-          ffmpeg -y \
-            -ss "$START" $DURATION_FLAG \
-            -i source_input.mkv \
-            -map 0 \
-            -c copy \
-            source_trimmed.mkv
-          rm source_input.mkv
-        fi
-        echo "Trimmed file size: $(du -sh source_trimmed.mkv | cut -f1)"
 
-    # -------------------------------------------------------------------------
-    # 6. Encode with av1an + SVT-AV1
-    #
-    #    Key av1an flags:
-    #      --encoder svt-av1          encoder backend
-    #      --video-params             raw SVT-AV1 CLI params
-    #      --pix-format               10-bit 4:2:0 for better compression
-    #      --ffmpeg "-vf ..."         per-chunk pre-filter (denoise + scale)
-    #      --audio-params             passed to ffmpeg for audio track(s)
-    #      --workers                  parallel encode workers (4 = full runner)
-    #      --split-method             av-scenechange for accurate scene cuts
-    #      --sc-downscale-height      downscale during scene detection (speed)
-    #      --chunk-method segment     ffmpeg-based chunking, no VapourSynth needed
-    #      --concat mkvmerge          reliable MKV concat backend
-    #      --min-scene-len 24         avoid tiny scenes (< 1s @ 24 fps)
-    #      --target-quality           optional VMAF-based CRF auto-probing
-    #      --resume                   safe restart after any interruption
-    # -------------------------------------------------------------------------
-    - name: Encode with av1an + SVT-AV1
-      run: |
-        source "$HOME/.cargo/env"
+          echo "Downloading av1an from: $AV1AN_RELEASE_URL"
 
-        CRF="${{ github.event.inputs.crf }}"
-        PRESET="${{ github.event.inputs.preset }}"
-        WORKERS="${{ github.event.inputs.workers }}"
-        SPLIT="${{ github.event.inputs.scenes_split_method }}"
-        TARGET_VMAF="${{ github.event.inputs.target_vmaf }}"
-        AUDIO_BR="${{ github.event.inputs.audio_bitrate }}"
-        OUTPUT="${{ github.event.inputs.output_name }}"
+          if echo "$AV1AN_RELEASE_URL" | grep -q '\.tar\.gz'; then
+            curl -fsSL "$AV1AN_RELEASE_URL" -o /tmp/av1an.tar.gz
+            tar -xzf /tmp/av1an.tar.gz -C /tmp
+            AV1AN_BIN=$(find /tmp -name "av1an" -type f 2>/dev/null | head -1)
+          else
+            curl -fsSL "$AV1AN_RELEASE_URL" -o /tmp/av1an
+            AV1AN_BIN=/tmp/av1an
+          fi
 
-        # SVT-AV1 params:
-        #   tune=0           PSNR/SSIM tuned (better compression efficiency)
-        #   film-grain=0     no synthetic grain (raise 1-8 for grainy sources)
-        #   enable-tpl-la=1  temporal prediction look-ahead
-        #   enable-overlays=1 overlapped block motion compensation
-        #   aq-mode=1        variance-based adaptive quantization
-        SVT_PARAMS="tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1:aq-mode=1"
+          sudo install -m 755 "$AV1AN_BIN" /usr/local/bin/av1an
 
-        # VMAF target quality overrides CRF if set
-        VMAF_FLAG=""
-        if [ "$TARGET_VMAF" != "0" ]; then
-          VMAF_FLAG="--target-quality $TARGET_VMAF"
-          echo "VMAF target mode: $TARGET_VMAF"
-        fi
+          echo "=== av1an version ==="
+          av1an --version
 
-        # Per-chunk pre-filter applied by ffmpeg before SVT-AV1 sees frames:
-        #   hqdn3d  - high-quality denoise (reduces noise entropy -> smaller file)
-        #   scale   - limit to 1080p height, preserve aspect, lanczos resampling
-        FFMPEG_FILTER="hqdn3d=1.5:1.2:3:3,scale=-1:1080:flags=lanczos"
+      # ── 4. Install SVT-AV1 encoder binary ───────────────────────────────────
+      - name: Install SVT-AV1
+        run: |
+          # Try latest release binary first
+          SVT_URL=$(
+            curl -fsSL https://api.github.com/repos/AOMediaCodec/SVT-AV1/releases/latest \
+            | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for a in data['assets']:
+              n = a['name'].lower()
+              if 'linux' in n and n.endswith('.tar.gz'):
+                  print(a['browser_download_url'])
+                  break
+          " 2>/dev/null || echo ""
+          )
 
-        echo "============================================"
-        echo " av1an encode settings"
-        echo "  Encoder  : SVT-AV1"
-        echo "  CRF      : $CRF"
-        echo "  Preset   : $PRESET"
-        echo "  Workers  : $WORKERS"
-        echo "  VMAF     : ${TARGET_VMAF} (0=disabled)"
-        echo "  Split    : $SPLIT"
-        echo "  Audio    : libopus @ $AUDIO_BR VBR"
-        echo "  Filter   : $FFMPEG_FILTER"
-        echo "============================================"
+          if [ -n "$SVT_URL" ]; then
+            curl -fsSL "$SVT_URL" -o /tmp/svtav1.tar.gz
+            tar -xzf /tmp/svtav1.tar.gz -C /tmp
+            SVT_BIN=$(find /tmp -name "SvtAv1EncApp" -type f 2>/dev/null | head -1)
+            [ -n "$SVT_BIN" ] && sudo install -m 755 "$SVT_BIN" /usr/local/bin/SvtAv1EncApp && \
+              echo "Installed SVT-AV1 from upstream release" && SvtAv1EncApp --version && exit 0
+          fi
 
-        av1an \
-          -i source_trimmed.mkv \
-          -o "${OUTPUT}.mkv" \
-          \
-          --encoder svt-av1 \
-          --video-params "--preset $PRESET --crf $CRF --$SVT_PARAMS" \
-          \
-          --pix-format yuv420p10le \
-          \
-          --ffmpeg "-vf $FFMPEG_FILTER" \
-          \
-          --audio-params "-c:a libopus -b:a $AUDIO_BR -vbr on" \
-          \
-          --workers "$WORKERS" \
-          --split-method "$SPLIT" \
-          --sc-method standard \
-          --sc-downscale-height 360 \
-          \
-          --chunk-method segment \
-          --concat mkvmerge \
-          \
-          --min-scene-len 24 \
-          \
-          $VMAF_FLAG \
-          \
-          --verbose \
-          --keep \
-          --resume
+          # Fallback: apt package (may be an older version)
+          echo "Falling back to apt svt-av1..."
+          sudo apt-get install -y svt-av1 || true
+          SvtAv1EncApp --version || true
 
-        echo ""
-        echo "Encode complete!"
-        echo "Output size: $(du -sh "${OUTPUT}.mkv" | cut -f1)"
+      # ── 5. Install L-SMASH Works VapourSynth plugin (enables lsmash chunks) ─
+      - name: Install VapourSynth + L-SMASH Works
+        run: |
+          # Install VapourSynth from pip (static wheel, no compile needed)
+          pip3 install vapoursynth --break-system-packages 2>/dev/null || \
+          pip3 install vapoursynth 2>/dev/null || \
+          sudo apt-get install -y vapoursynth 2>/dev/null || true
 
-    # -------------------------------------------------------------------------
-    # 7. Post-encode stats report
-    # -------------------------------------------------------------------------
-    - name: Post-encode report
-      if: success()
-      run: |
-        OUTPUT="${{ github.event.inputs.output_name }}"
-        SOURCE="source_trimmed.mkv"
+          VS_PLUGIN_DIR=$(python3 -c "
+          try:
+              import vapoursynth as vs
+              print(vs.get_plugins_ro())
+          except Exception:
+              print('/usr/lib/vapoursynth')
+          " 2>/dev/null)
 
-        SRC_SIZE=$(stat -c%s "$SOURCE" 2>/dev/null || echo 0)
-        OUT_SIZE=$(stat -c%s "${OUTPUT}.mkv" 2>/dev/null || echo 0)
+          sudo mkdir -p "$VS_PLUGIN_DIR"
 
-        if [ "$SRC_SIZE" -gt 0 ] && [ "$OUT_SIZE" -gt 0 ]; then
-          echo "Source : $(( SRC_SIZE / 1048576 )) MB"
-          echo "Output : $(( OUT_SIZE / 1048576 )) MB"
-          python3 -c "print(f'Ratio  : {$OUT_SIZE/$SRC_SIZE*100:.1f}% of source')"
-        fi
+          # Download L-SMASH Works pre-built plugin
+          LSMASH_URL="https://github.com/AkarinVS/L-SMASH-Works/releases/download/vA.3j/LSMASHWorks-x86_64-Linux-GNU.tar.gz"
+          if curl -fsSL "$LSMASH_URL" -o /tmp/lsmash.tar.gz 2>/dev/null; then
+            tar -xzf /tmp/lsmash.tar.gz -C /tmp/lsmash_out 2>/dev/null || mkdir -p /tmp/lsmash_out
+            sudo cp /tmp/lsmash_out/*.so "$VS_PLUGIN_DIR/" 2>/dev/null && \
+              echo "L-SMASH Works installed to $VS_PLUGIN_DIR" || true
+          else
+            echo "::warning::L-SMASH Works download failed; chunk method may fall back"
+          fi
 
-        echo ""
-        echo "Output stream info:"
-        ffprobe -v quiet -print_format json -show_streams "${OUTPUT}.mkv" \
-          | python3 -c "
-        import json, sys
-        for s in json.load(sys.stdin)['streams']:
-            t = s['codec_type']
-            if t == 'video':
-                print(f'  Video : {s[\"codec_name\"]} {s[\"width\"]}x{s[\"height\"]} '
-                      f'{s.get(\"avg_frame_rate\",\"?\")} fps')
-            elif t == 'audio':
-                print(f'  Audio : {s[\"codec_name\"]} ch={s.get(\"channels\",\"?\")} '
-                      f'br={s.get(\"bit_rate\",\"?\")} bps')
-            elif t == 'subtitle':
-                print(f'  Sub   : {s[\"codec_name\"]} [{s.get(\"tags\",{}).get(\"language\",\"?\")}]')
-        "
+          # Expose resolved chunk method for the encode step
+          CHUNK_INPUT="${{ github.event.inputs.chunk_method }}"
+          echo "RESOLVED_CHUNK=${CHUNK_INPUT:-lsmash}" >> "$GITHUB_ENV"
 
-    # -------------------------------------------------------------------------
-    # 8. Cleanup temp files before artifact upload (saves quota)
-    # -------------------------------------------------------------------------
-    - name: Cleanup temp files
-      if: always()
-      run: |
-        rm -f source_input.mkv source_trimmed.mkv
-        rm -rf ./*.mkv.temp 2>/dev/null || true
+      # ── 6. Download source video ─────────────────────────────────────────────
+      - name: Download Source Video
+        run: |
+          echo "=== Downloading source ==="
+          # -g disables glob so brackets in URLs are passed literally
+          curl -g -L --retry 3 --retry-delay 5 \
+            "${{ github.event.inputs.video_url }}" \
+            -o source_raw.mkv
 
-    # -------------------------------------------------------------------------
-    # 9. Upload encoded output artifact
-    #    Wildcard path avoids "file not found" errors with special characters.
-    # -------------------------------------------------------------------------
-    - name: Upload encoded video
-      uses: actions/upload-artifact@v4
-      with:
-        name: Encoded-AV1an-Output
-        path: "./*.mkv"
-        if-no-files-found: error
-        retention-days: 3
+          echo "=== Source file info ==="
+          ls -lh source_raw.mkv
+          ffprobe -v quiet -show_format -show_streams source_raw.mkv 2>&1 | head -50
 
-##############################################################################
-# RUNNER REFERENCE - Public repo free tier (unlimited minutes)
-#
-# VM / Container   CPU   RAM     SSD     Arch    Workflow Label
-# ───────────────  ───   ──────  ──────  ──────  ──────────────────────────
-# Linux (slim)      1    5 GB    14 GB   x64     ubuntu-slim
-# Linux ★           4    16 GB   14 GB   x64     ubuntu-latest, ubuntu-24.04
-# Linux ARM         4    16 GB   14 GB   arm64   ubuntu-24.04-arm
-# Windows           4    16 GB   14 GB   x64     windows-latest, windows-2025
-# Windows ARM       4    16 GB   14 GB   arm64   windows-11-arm
-# macOS (Intel)     4    14 GB   14 GB   Intel   macos-15-intel, macos-26-intel
-# macOS (M1)        3     7 GB   14 GB   arm64   macos-latest, macos-14/15/26
-#
-# ★ This workflow targets ubuntu-latest: best CPU+RAM for parallel AV1 encode.
-# All standard runners are FREE and UNLIMITED on public repositories.
-##############################################################################
+      # ── 7. Trim source (if requested) ────────────────────────────────────────
+      - name: Trim Source (optional)
+        run: |
+          START="${{ github.event.inputs.start_time }}"
+          DURATION="${{ github.event.inputs.duration }}"
+
+          if [ "$START" = "00:00:00" ] && [ "$DURATION" = "0" ]; then
+            echo "No trimming requested — using full source."
+            mv source_raw.mkv source.mkv
+          else
+            echo "Trimming: start=$START  duration=$DURATION"
+            DURATION_FLAG=""
+            [ "$DURATION" != "0" ] && DURATION_FLAG="-t $DURATION"
+
+            # Stream-copy trim; avoids re-encode at this stage
+            ffmpeg -y \
+              -ss "$START" $DURATION_FLAG \
+              -i source_raw.mkv \
+              -map 0 \
+              -c copy \
+              source.mkv
+
+            rm source_raw.mkv
+            echo "=== Trimmed source size ==="
+            ls -lh source.mkv
+          fi
+
+      # ── 8. av1an parallel encode ─────────────────────────────────────────────
+      - name: Encode with av1an (SVT-AV1, chunked parallel)
+        run: |
+          CRF="${{ github.event.inputs.crf }}"
+          PRESET="${{ github.event.inputs.preset }}"
+          WORKERS="${{ github.event.inputs.workers }}"
+          SC_METHOD="${{ github.event.inputs.sc_method }}"
+          MIN_SCENE="${{ github.event.inputs.min_scene_len }}"
+          PHOTON="${{ github.event.inputs.photon_noise }}"
+          AUDIO_BR="${{ github.event.inputs.audio_bitrate }}"
+          OUTPUT="${{ github.event.inputs.output_name }}.mkv"
+
+          # ── Worker auto-detect ───────────────────────────────────────────────
+          # ubuntu-latest = 4 vCPU; reserve 1 for I/O, use 3 for encoding chunks
+          if [ "$WORKERS" = "0" ]; then
+            VCPUS=$(nproc)
+            WORKERS=$(( VCPUS > 1 ? VCPUS - 1 : 1 ))
+            echo "Auto-detected ${VCPUS} vCPUs → using ${WORKERS} parallel workers"
+          fi
+
+          # ── Optional photon-noise flag ───────────────────────────────────────
+          PHOTON_FLAG=""
+          [ "$PHOTON" != "0" ] && PHOTON_FLAG="--photon-noise ${PHOTON}"
+
+          # ── Chunk method (may have been updated by VapourSynth install step) ─
+          CHUNK="${RESOLVED_CHUNK:-lsmash}"
+
+          echo "============================================"
+          echo "  Encoder    : SVT-AV1"
+          echo "  CRF        : $CRF"
+          echo "  Preset     : $PRESET"
+          echo "  Workers    : $WORKERS"
+          echo "  Chunk      : $CHUNK"
+          echo "  SC method  : $SC_METHOD"
+          echo "  Min scene  : $MIN_SCENE frames"
+          echo "  Audio br   : $AUDIO_BR"
+          echo "  Photon     : ${PHOTON_FLAG:-disabled}"
+          echo "  Output     : $OUTPUT"
+          echo "============================================"
+
+          av1an \
+            -i source.mkv \
+            -o "$OUTPUT" \
+            \
+            --encoder svt-av1 \
+            --workers "$WORKERS" \
+            --chunk-method "$CHUNK" \
+            --sc-method "$SC_METHOD" \
+            --min-scene-len "$MIN_SCENE" \
+            --extra-split 240 \
+            --concat mkvmerge \
+            --pix-format yuv420p10le \
+            --resume \
+            --verbose \
+            $PHOTON_FLAG \
+            \
+            --ffmpeg "-vf hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
+            \
+            --video-params \
+              "--preset ${PRESET} --crf ${CRF} --tune 0 --film-grain 0 --enable-tpl-la 1 --enable-overlays 1 --aq-mode 1" \
+            \
+            --audio-params \
+              "-c:a libopus -b:a ${AUDIO_BR} -vbr on"
+
+          echo "=== Encode complete ==="
+          ls -lh "$OUTPUT"
+
+      # ── 9. Stats & verification ──────────────────────────────────────────────
+      - name: Verify Output & Print Encode Report
+        run: |
+          OUTPUT="${{ github.event.inputs.output_name }}.mkv"
+
+          if [ ! -f "$OUTPUT" ]; then
+            echo "::error::Encoded file '$OUTPUT' not found!"
+            exit 1
+          fi
+
+          SOURCE_BYTES=$(stat -c%s source.mkv 2>/dev/null || echo 0)
+          OUTPUT_BYTES=$(stat -c%s "$OUTPUT")
+
+          RATIO=$(python3 -c "
+          s, o = $SOURCE_BYTES, $OUTPUT_BYTES
+          print(f'{o/s*100:.1f}%' if s else 'N/A')
+          ")
+
+          SOURCE_HUMAN=$(numfmt --to=iec $SOURCE_BYTES  2>/dev/null || echo "${SOURCE_BYTES} bytes")
+          OUTPUT_HUMAN=$(numfmt --to=iec $OUTPUT_BYTES  2>/dev/null || echo "${OUTPUT_BYTES} bytes")
+
+          echo "============================================"
+          echo "  Source size  : $SOURCE_HUMAN"
+          echo "  Output size  : $OUTPUT_HUMAN"
+          echo "  Compression  : $RATIO of original"
+          echo "============================================"
+
+          echo "=== Stream info ==="
+          ffprobe -v quiet \
+            -show_streams -show_format \
+            -of default=noprint_wrappers=1 \
+            "$OUTPUT" 2>&1 | \
+            grep -E 'codec_name|width|height|r_frame_rate|bit_rate|duration|size|channel'
+
+      # ── 10. Upload artifact ──────────────────────────────────────────────────
+      - name: Upload Encoded Video
+        uses: actions/upload-artifact@v4
+        with:
+          name: 'Encoded-Output-File'
+          # Wildcard path avoids bracket/special-char expansion issues
+          path: './*.mkv'
+          if-no-files-found: error
+          retention-days: 3
