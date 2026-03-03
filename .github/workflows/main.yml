@@ -1,12 +1,12 @@
-name: Ultra-Low Size Av1an Encode
+name: Ultra-Low Size AV1 Encode
 on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'Direct Link to Source Video'
+        description: 'Direct Link to Source Video (Supports brackets [])'
         required: true
       output_name:
-        description: 'Output Filename (No .mkv)'
+        description: 'Output Filename (Do NOT include .mkv)'
         default: 'encoded_video'
         required: true
       start_time:
@@ -14,46 +14,54 @@ on:
         default: '00:00:00'
         required: false
       duration:
-        description: 'Duration (HH:MM:SS) - 0 for full'
+        description: 'Duration (HH:MM:SS) - Set to 0 for full video'
         default: '0'
         required: false
 
 jobs:
-  av1an-encode:
+  encode-video:
     runs-on: ubuntu-latest
     steps:
       - name: Maximize Disk Space
-        run: sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
-
-      - name: Download Source
-        run: curl -g -L "${{ github.event.inputs.video_url }}" -o source_file.mkv
-
-      - name: Run Av1an
         run: |
-          # Setup FFmpeg seeking/duration
-          FFMPEG_INPUT_ARGS="-ss ${{ github.event.inputs.start_time }}"
+          sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Download and Encode
+        run: |
+          # 1. Download using -g to ignore globbing (fixing the bracket error)
+          curl -g -L "${{ github.event.inputs.video_url }}" -o source_file.mkv
+          
+          # 2. Logic for partial encoding
+          DURATION_FLAG=""
           if [ "${{ github.event.inputs.duration }}" != "0" ]; then
-            FFMPEG_INPUT_ARGS="$FFMPEG_INPUT_ARGS -t ${{ github.event.inputs.duration }}"
+            DURATION_FLAG="-t ${{ github.event.inputs.duration }}"
           fi
-
-          # Using Docker for Av1an
-          # Changed --split-method to the newer syntax and used ffmpeg for scene detection
-          docker run --rm -v $(pwd):/files masterofzen/av1an:latest \
-            -i /files/source_file.mkv \
-            -f "$FFMPEG_INPUT_ARGS" \
-            --verbose \
-            --encoder svt-av1 \
-            --video-params " --preset 6 --crf 55 --tune 0 --enable-tpl-la 1 --aq-mode 1 --enable-overlays 1 " \
-            --audio-params "-c:a libopus -b:a 32k" \
-            --sc-method ffmpeg \
-            -o "/files/${{ github.event.inputs.output_name }}.mkv"
-
-      - name: Cleanup Source
-        run: rm source_file.mkv
-
-      - name: Upload Result
+          # 3. Encode with your Quality-Fix parameters
+          # Using "" around the output name to handle spaces in the shell
+          ffmpeg -y -ss ${{ github.event.inputs.start_time }} $DURATION_FLAG \
+            -i source_file.mkv \
+            -map 0 \
+            -vf "hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
+            -c:v libsvtav1 \
+            -pix_fmt yuv420p10le \
+            -preset 6 \
+            -crf 55 \
+            -svtav1-params "tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1:aq-mode=1" \
+            -c:a libopus -b:a 32k -vbr on \
+            -c:s copy \
+            -map_chapters 0 \
+            "${{ github.event.inputs.output_name }}.mkv"
+          
+          # 4. CRITICAL: Remove source so the wildcard upload ONLY finds the result
+          rm source_file.mkv
+      - name: Upload Final Encoded Video
         uses: actions/upload-artifact@v4
         with:
-          name: "Av1an-Output"
+          name: "Encoded-Output-File"
+          # Using the wildcard ./ *.mkv solves the "File Not Found" bracket error
           path: "./*.mkv"
           if-no-files-found: error
+          retention-days: 3
