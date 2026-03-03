@@ -82,26 +82,13 @@ jobs:
 
     steps:
     # -------------------------------------------------------------------------
-    # 1. Reclaim disk space
-    #    The default runner has ~14 GB SSD; removing unused packages frees
-    #    several GB for large source files and encode temp chunks.
-    # -------------------------------------------------------------------------
-    - name: Reclaim disk space
-      run: |
-        sudo rm -rf \
-          /usr/share/dotnet \
-          /opt/ghc \
-          /usr/local/share/boost \
-          /usr/share/swift \
-          "$AGENT_TOOLSDIRECTORY"
-        df -h
-
-    # -------------------------------------------------------------------------
-    # 2. Install system dependencies
-    #    ffmpeg       - demux, audio encode, fallback muxing
-    #    mkvtoolnix   - mkvmerge (av1an recommended concat backend)
-    #    vapoursynth  - av1an preferred frame-server for chunking
-    #    python3-pip  - to install vapoursynth Python bindings
+    # 1. Install system dependencies
+    #    ffmpeg      - demux, audio encode, muxing
+    #    mkvtoolnix  - mkvmerge (av1an's recommended concat backend)
+    #    nasm/yasm   - required to compile SVT-AV1
+    #    NOTE: VapourSynth is NOT in the default Ubuntu apt repos.
+    #    We use --chunk-method segment instead, which drives chunking
+    #    purely via ffmpeg — no VapourSynth needed.
     # -------------------------------------------------------------------------
     - name: Install system dependencies
       run: |
@@ -118,26 +105,11 @@ jobs:
           wget \
           build-essential \
           cmake \
-          pkg-config \
-          libvapoursynth-dev \
-          vapoursynth \
-          vapoursynth-tools
+          pkg-config
 
     # -------------------------------------------------------------------------
-    # 3. Install VapourSynth Python bindings (for av1an scene detection)
-    # -------------------------------------------------------------------------
-    - name: Install VapourSynth Python bindings
-      run: |
-        pip3 install --break-system-packages vapoursynth || true
-        pip3 install --break-system-packages \
-          vstools \
-          vsmasktools \
-          vsscale \
-          vsdenoise || true
-
-    # -------------------------------------------------------------------------
-    # 4. Build and install SVT-AV1
-    #    av1an calls SvtAv1EncApp directly, so it must be on PATH.
+    # 2. Build and install SVT-AV1
+    #    av1an calls SvtAv1EncApp directly — must be on PATH.
     # -------------------------------------------------------------------------
     - name: Build and install SVT-AV1
       run: |
@@ -156,7 +128,7 @@ jobs:
         SvtAv1EncApp --version
 
     # -------------------------------------------------------------------------
-    # 5. Install Rust and build av1an
+    # 3. Install Rust and build av1an
     # -------------------------------------------------------------------------
     - name: Install Rust and build av1an
       run: |
@@ -168,9 +140,9 @@ jobs:
         av1an --version
 
     # -------------------------------------------------------------------------
-    # 6. Download source video
-    #    curl -g  -> disables URL globbing (fixes bracket [ ] in URLs)
-    #    curl -L  -> follow redirects
+    # 4. Download source video
+    #    curl -g -> disables URL globbing (fixes bracket [ ] in URLs)
+    #    curl -L -> follow redirects
     # -------------------------------------------------------------------------
     - name: Download source video
       run: |
@@ -196,7 +168,7 @@ jobs:
         "
 
     # -------------------------------------------------------------------------
-    # 7. Optional trim — stream copy before av1an chunking
+    # 5. Optional trim — stream copy before av1an chunking
     #    Trimming early reduces chunk count and total encode time.
     # -------------------------------------------------------------------------
     - name: Trim video (if requested)
@@ -224,22 +196,22 @@ jobs:
         echo "Trimmed file size: $(du -sh source_trimmed.mkv | cut -f1)"
 
     # -------------------------------------------------------------------------
-    # 8. Encode with av1an + SVT-AV1
+    # 6. Encode with av1an + SVT-AV1
     #
-    #    Key av1an flags used:
+    #    Key av1an flags:
     #      --encoder svt-av1          encoder backend
     #      --video-params             raw SVT-AV1 CLI params
     #      --pix-format               10-bit 4:2:0 for better compression
     #      --ffmpeg "-vf ..."         per-chunk pre-filter (denoise + scale)
     #      --audio-params             passed to ffmpeg for audio track(s)
     #      --workers                  parallel encode workers (4 = full runner)
-    #      --split-method             av-scenechange for accurate cuts
-    #      --sc-downscale-height      downscale during scene detection (fast)
-    #      --chunk-method ffms2       frame-accurate chunk seek via ffms2
+    #      --split-method             av-scenechange for accurate scene cuts
+    #      --sc-downscale-height      downscale during scene detection (speed)
+    #      --chunk-method segment     ffmpeg-based chunking, no VapourSynth needed
     #      --concat mkvmerge          reliable MKV concat backend
-    #      --min-scene-len 24         avoid tiny scenes (< 1s @ 24fps)
-    #      --target-quality           optional VMAF-based CRF probing
-    #      --resume                   restart safely after any interruption
+    #      --min-scene-len 24         avoid tiny scenes (< 1s @ 24 fps)
+    #      --target-quality           optional VMAF-based CRF auto-probing
+    #      --resume                   safe restart after any interruption
     # -------------------------------------------------------------------------
     - name: Encode with av1an + SVT-AV1
       run: |
@@ -303,7 +275,7 @@ jobs:
           --sc-method standard \
           --sc-downscale-height 360 \
           \
-          --chunk-method ffms2 \
+          --chunk-method segment \
           --concat mkvmerge \
           \
           --min-scene-len 24 \
@@ -319,7 +291,7 @@ jobs:
         echo "Output size: $(du -sh "${OUTPUT}.mkv" | cut -f1)"
 
     # -------------------------------------------------------------------------
-    # 9. Post-encode stats report
+    # 7. Post-encode stats report
     # -------------------------------------------------------------------------
     - name: Post-encode report
       if: success()
@@ -354,7 +326,7 @@ jobs:
         "
 
     # -------------------------------------------------------------------------
-    # 10. Cleanup temp files before artifact upload (saves quota)
+    # 8. Cleanup temp files before artifact upload (saves quota)
     # -------------------------------------------------------------------------
     - name: Cleanup temp files
       if: always()
@@ -363,8 +335,8 @@ jobs:
         rm -rf ./*.mkv.temp 2>/dev/null || true
 
     # -------------------------------------------------------------------------
-    # 11. Upload encoded output artifact
-    #     Wildcard path avoids "file not found" errors with special characters.
+    # 9. Upload encoded output artifact
+    #    Wildcard path avoids "file not found" errors with special characters.
     # -------------------------------------------------------------------------
     - name: Upload encoded video
       uses: actions/upload-artifact@v4
