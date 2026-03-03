@@ -93,17 +93,7 @@ jobs:
 
     steps:
 
-      # ── 1. Free up disk space ────────────────────────────────────────────────
-      - name: Maximize Disk Space
-        run: |
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /opt/ghc \
-            /usr/local/share/boost \
-            /usr/local/lib/android \
-            "$AGENT_TOOLSDIRECTORY"
-
-      # ── 2. Install host-side tools (ffmpeg for trim + ffprobe for verify) ───
+      # ── 1. Install host-side tools (ffmpeg for trim + ffprobe for verify) ───
       - name: Install FFmpeg
         run: |
           sudo apt-get update -qq
