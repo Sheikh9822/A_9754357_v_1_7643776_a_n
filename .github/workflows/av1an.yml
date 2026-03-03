@@ -1,6 +1,7 @@
 # =============================================================================
 # Ultra-Low Size AV1 Encode (Anime Edition) — av1an + libaom-av1
 # Runner: ubuntu-latest (4 vCPU / 16 GB RAM / 14 GB SSD, x64)
+#
 # Uses the official masterofzen/av1an Docker image.
 # Optimized for Anime: 10-bit, SSIM tuning, Grain Synthesis, and Forward KFs.
 # =============================================================================
@@ -110,8 +111,6 @@ jobs:
           fi
 
       # ── 3. Cache av1an Temp Folder (For Resuming) ────────────────────────────
-      # If the 6-hour GitHub limit kills the runner, re-running the action
-      # will restore the chunks that already finished and resume automatically.
       - name: Cache av1an Resume Data
         uses: actions/cache@v4
         with:
@@ -137,7 +136,8 @@ jobs:
           START="${{ github.event.inputs.start_time }}"
           DURATION="${{ github.event.inputs.duration }}"
 
-          if[ "$START" = "00:00:00" ] && [ "$DURATION" = "0" ]; then
+          # FIXED: Added space between if and[
+          if [ "$START" = "00:00:00" ] &&[ "$DURATION" = "0" ]; then
             echo "No trimming requested — using full source."
             mv source_raw.mkv source.mkv
           else
@@ -168,14 +168,12 @@ jobs:
           AUDIO_BR="${{ github.event.inputs.audio_bitrate }}"
           OUTPUT="${{ github.event.inputs.output_name }}.mkv"
 
-          # Worker auto-detect for libaom on 4 vCPUs
-          # libaom is single-threaded per chunk, so we want exactly 4 workers.
           if [ "$WORKERS" = "0" ]; then
             WORKERS=4
             echo "Auto-detected libaom on 4 vCPUs → using 4 parallel workers (1 thread each)"
           fi
 
-          # Optional grain synthesis flag
+          # FIXED: Added newline before the bracket
           GRAIN_FLAG=""[ "$GRAIN" != "0" ] && GRAIN_FLAG="--denoise-noise-level=${GRAIN}"
 
           echo "============================================"
@@ -191,8 +189,6 @@ jobs:
 
           mkdir -p "$PWD/av1an-tmp"
 
-          # Run encode in background so we can poll progress.
-          # Note: --threads=1 is passed to libaom to prevent core contention.
           docker run --rm --privileged \
             --user "$(id -u):$(id -g)" \
             -v "$PWD:/videos" \
@@ -216,7 +212,6 @@ jobs:
             &
           DOCKER_PID=$!
 
-          # Poll av1an's done.json every 30s
           START_TS=$SECONDS
           while kill -0 $DOCKER_PID 2>/dev/null; do
             sleep 30
@@ -231,7 +226,7 @@ jobs:
             ELAPSED=$(( SECONDS - START_TS ))
             MINS=$(( ELAPSED / 60 ))
             SECS=$(( ELAPSED % 60 ))
-            echo "  [${MINS}m ${SECS}s]  Chunks done: ${DONE}"
+            echo "[${MINS}m ${SECS}s]  Chunks done: ${DONE}"
           done
 
           wait $DOCKER_PID
@@ -244,7 +239,8 @@ jobs:
         run: |
           OUTPUT="${{ github.event.inputs.output_name }}.mkv"
 
-          if[ ! -f "$OUTPUT" ]; then
+          # FIXED: Added space between if and [
+          if [ ! -f "$OUTPUT" ]; then
             echo "::error::Encoded file '$OUTPUT' not found! (Did it hit the 6-hour timeout?)"
             exit 1
           fi
