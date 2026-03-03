@@ -1,7 +1,6 @@
 # =============================================================================
 # Ultra-Low Size AV1 Encode (Anime Edition) — av1an + libaom-av1
 # Runner: ubuntu-latest (4 vCPU / 16 GB RAM / 14 GB SSD, x64)
-#
 # Uses the official masterofzen/av1an Docker image.
 # Optimized for Anime: 10-bit, SSIM tuning, Grain Synthesis, and Forward KFs.
 # =============================================================================
