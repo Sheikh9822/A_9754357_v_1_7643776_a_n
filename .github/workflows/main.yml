@@ -36,7 +36,7 @@ jobs:
             -vf "hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
             -c:v libsvtav1 \
             -pix_fmt yuv420p10le \
-            -preset 8 \
+            -preset 6 \
             -crf 55 \
             -svtav1-params "tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1" \
             -c:a libopus -b:a 48k -vbr on \
