@@ -17,18 +17,19 @@ jobs:
       - name: Maximize Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
-          # This gives us ~30-35GB of working room
+          # Clears ~30GB+ for large encodes
 
       - name: Install FFmpeg
-        uses: Apptainer/setup-ffmpeg@v1
+        uses: re-actors/setup-ffmpeg@v1
         with:
-          ffmpeg-version: '6.1'
+          version: '6.1'
 
       - name: Download and Encode
-        # We process the file and then immediately delete the source to free space
         run: |
+          # 1. Download source
           curl -L "${{ github.event.inputs.video_url }}" -o source_file.mkv
           
+          # 2. Run the low-bitrate AV1 encode
           ffmpeg -y -i source_file.mkv \
             -map 0 \
             -vf "hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
@@ -42,13 +43,13 @@ jobs:
             -map_chapters 0 \
             "${{ github.event.inputs.output_name }}.mkv"
           
+          # 3. Delete source immediately to ensure upload space
           rm source_file.mkv
 
       - name: Upload Final Encoded Video
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.output_name }}
-          # Path points specifically to your new file
           path: "${{ github.event.inputs.output_name }}.mkv"
           if-no-files-found: error
           retention-days: 3
