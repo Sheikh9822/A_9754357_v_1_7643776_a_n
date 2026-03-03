@@ -94,21 +94,7 @@ jobs:
 
     steps:
 
-      # ── 1. Free up disk space ────────────────────────────────────────────────
-      - name: Maximize Disk Space
-        run: |
-          echo "=== Disk before cleanup ==="
-          df -h
-          sudo rm -rf \
-            /usr/share/dotnet \
-            /opt/ghc \
-            /usr/local/share/boost \
-            /usr/local/lib/android \
-            "$AGENT_TOOLSDIRECTORY"
-          echo "=== Disk after cleanup ==="
-          df -h
-
-      # ── 2. Install system dependencies ──────────────────────────────────────
+      # ── 1. Install system dependencies ──────────────────────────────────────
       - name: Install System Dependencies
         run: |
           sudo apt-get update -qq
@@ -123,40 +109,44 @@ jobs:
 
       # ── 3. Install av1an binary ──────────────────────────────────────────────
       - name: Install av1an
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Resolve latest pre-built static binary (Linux x86_64) from
-          # the official rust-av/Av1an GitHub releases page.
-          AV1AN_RELEASE_URL=$(
-            curl -fsSL https://api.github.com/repos/rust-av/Av1an/releases/latest \
-            | python3 -c "
+          # Release asset: raw static musl binary (no archive needed).
+          # Primary: gh CLI — always present on GitHub-hosted runners.
+          # Fallback: curl + GitHub API with auth token to avoid rate limits.
+          ASSET_NAME="av1an-x86_64-unknown-linux-musl"
+
+          echo "Downloading $ASSET_NAME..."
+          if gh release download \
+              --repo rust-av/Av1an \
+              --pattern "$ASSET_NAME" \
+              --dir /tmp 2>/dev/null; then
+            echo "gh CLI download succeeded."
+          else
+            echo "gh CLI failed — falling back to API resolution..."
+            AV1AN_URL=$(
+              curl -fsSL \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                https://api.github.com/repos/rust-av/Av1an/releases/latest \
+              | python3 -c "
           import sys, json
           data = json.load(sys.stdin)
-          for a in data['assets']:
-              name = a['name']
-              if 'x86_64' in name and ('Linux' in name or 'linux' in name):
+          for a in data.get('assets', []):
+              if a['name'] == 'av1an-x86_64-unknown-linux-musl':
                   print(a['browser_download_url'])
                   break
           "
-          )
-
-          if [ -z "$AV1AN_RELEASE_URL" ]; then
-            echo "::warning::Could not resolve latest release URL; trying known path"
-            AV1AN_RELEASE_URL="https://github.com/rust-av/Av1an/releases/latest/download/av1an-x86_64-Linux"
+            )
+            if [ -z "$AV1AN_URL" ]; then
+              echo "::error::Could not locate av1an asset in latest release"
+              exit 1
+            fi
+            echo "Resolved URL: $AV1AN_URL"
+            curl -fsSL "$AV1AN_URL" -o "/tmp/$ASSET_NAME"
           fi
 
-          echo "Downloading av1an from: $AV1AN_RELEASE_URL"
-
-          if echo "$AV1AN_RELEASE_URL" | grep -q '\.tar\.gz'; then
-            curl -fsSL "$AV1AN_RELEASE_URL" -o /tmp/av1an.tar.gz
-            tar -xzf /tmp/av1an.tar.gz -C /tmp
-            AV1AN_BIN=$(find /tmp -name "av1an" -type f 2>/dev/null | head -1)
-          else
-            curl -fsSL "$AV1AN_RELEASE_URL" -o /tmp/av1an
-            AV1AN_BIN=/tmp/av1an
-          fi
-
-          sudo install -m 755 "$AV1AN_BIN" /usr/local/bin/av1an
-
+          sudo install -m 755 "/tmp/$ASSET_NAME" /usr/local/bin/av1an
           echo "=== av1an version ==="
           av1an --version
 
