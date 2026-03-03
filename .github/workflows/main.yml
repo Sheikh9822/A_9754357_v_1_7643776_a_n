@@ -6,7 +6,7 @@ on:
         description: 'Direct Link to Source Video'
         required: true
       output_name:
-        description: 'Output Filename (without extension)'
+        description: 'Output Filename (Keep as is or change)'
         default: 'encoded_video'
         required: true
       start_time:
@@ -14,7 +14,7 @@ on:
         default: '00:00:00'
         required: false
       duration:
-        description: 'Duration (HH:MM:SS) - Leave 0 for full video'
+        description: 'Duration (HH:MM:SS) - 0 for full'
         default: '0'
         required: false
 
@@ -33,17 +33,16 @@ jobs:
 
       - name: Download and Encode
         run: |
-          # Download using -g to handle [brackets]
+          # 1. Download
           curl -g -L "${{ github.event.inputs.video_url }}" -o source_file.mkv
           
-          # Logic to handle "Full Video" vs "Clip"
+          # 2. Setup Flags
           DURATION_FLAG=""
           if [ "${{ github.event.inputs.duration }}" != "0" ]; then
             DURATION_FLAG="-t ${{ github.event.inputs.duration }}"
           fi
 
-          # Encode command
-          # -ss BEFORE -i is faster (input seeking)
+          # 3. Encode (Notice the quotes around the output name)
           ffmpeg -y -ss ${{ github.event.inputs.start_time }} $DURATION_FLAG \
             -i source_file.mkv \
             -map 0 \
@@ -58,12 +57,14 @@ jobs:
             -map_chapters 0 \
             "${{ github.event.inputs.output_name }}.mkv"
           
+          # 4. Cleanup
           rm source_file.mkv
 
       - name: Upload Final Encoded Video
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.output_name }}
+          name: "Encoded-Result" 
+          # Use quotes here to handle the brackets and spaces
           path: "${{ github.event.inputs.output_name }}.mkv"
           if-no-files-found: error
           retention-days: 3
