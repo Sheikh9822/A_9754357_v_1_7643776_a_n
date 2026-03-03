@@ -17,7 +17,6 @@ jobs:
       - name: Maximize Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
-          # Clears ~30GB+ of room
 
       - name: Install FFmpeg
         run: |
@@ -26,25 +25,25 @@ jobs:
 
       - name: Download and Encode
         run: |
-          # 1. Download source
-          curl -L "${{ github.event.inputs.video_url }}" -o source_file.mkv
+          # Use -g to handle brackets in workers.dev URLs
+          curl -g -L "${{ github.event.inputs.video_url }}" -o source_file.mkv
           
-          # 2. Run the low-bitrate AV1 encode
-          # Using preset 8 for a balance of speed/efficiency on 4 cores
+          # Ultra-low size optimized command
+          # -map_metadata -1 strips hidden bloat
+          # aq-mode=0 and enable-tpl-la=0 force the lowest possible bitrate
           ffmpeg -y -i source_file.mkv \
-            -map 0 \
+            -map 0 -map_metadata -1 \
             -vf "hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
             -c:v libsvtav1 \
             -pix_fmt yuv420p10le \
             -preset 6 \
             -crf 55 \
-            -svtav1-params "tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1" \
-            -c:a libopus -b:a 48k -vbr on \
+            -svtav1-params "tune=0:film-grain=0:enable-tpl-la=0:enable-overlays=0:aq-mode=0" \
+            -c:a libopus -b:a 32k -vbr on \
             -c:s copy \
             -map_chapters 0 \
             "${{ github.event.inputs.output_name }}.mkv"
           
-          # 3. Delete source to ensure upload space
           rm source_file.mkv
 
       - name: Upload Final Encoded Video
