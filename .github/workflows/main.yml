@@ -51,7 +51,7 @@ jobs:
             -pix_fmt yuv420p10le \
             -preset 6 \
             -crf 55 \
-            -svtav1-params "tune=0:film-grain=0:enable-tpl-la=0:enable-overlays=0:aq-mode=0" \
+            -svtav1-params "tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1:aq-mode=1" \
             -c:a libopus -b:a 32k -vbr on \
             -c:s copy \
             -map_chapters 0 \
