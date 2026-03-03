@@ -174,8 +174,8 @@ jobs:
           # Reserve 1 for Docker/I/O orchestration, hand the rest to av1an
           if [ "$WORKERS" = "0" ]; then
             VCPUS=$(nproc)
-            WORKERS=$VCPUS
-            echo "Auto-detected ${VCPUS} vCPUs → using ${WORKERS} parallel workers"
+            WORKERS=$(( VCPUS / 2 ))
+            echo "Auto-detected ${VCPUS} vCPUs → using ${WORKERS} parallel workers (2 threads each)"
           fi
 
           # Optional photon-noise flag
@@ -196,16 +196,21 @@ jobs:
           echo "  Output     : $OUTPUT"
           echo "============================================"
 
+          # Create a host-side temp dir — av1an writes done.json here so the
+          # progress poller can read it from outside the Docker container.
+          mkdir -p "$PWD/av1an-tmp"
+
           # Mount $PWD as /videos inside the container.
           # --user preserves file ownership so the runner can read the output.
           # --privileged is required by av1an for mkvmerge concat.
-          # Run encode in background so we can poll progress
+          # Run encode in background so we can poll progress.
           docker run --rm --privileged \
             --user "$(id -u):$(id -g)" \
             -v "$PWD:/videos" \
             masterofzen/av1an:latest \
               -i /videos/source.mkv \
               -o "/videos/${OUTPUT}" \
+              --temp /videos/av1an-tmp \
               --encoder svt-av1 \
               --workers "$WORKERS" \
               --chunk-method "${{ github.event.inputs.chunk_method }}" \
@@ -218,20 +223,20 @@ jobs:
               --verbose \
               $PHOTON_FLAG \
               --ffmpeg "-vf hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
-              --video-params "--preset ${PRESET} --crf ${CRF} --tune 0 --film-grain 0 --enable-tpl-la 1 --enable-overlays 1 --aq-mode 1 --lp 1 --pin 1" \
+              --video-params "--preset ${PRESET} --crf ${CRF} --tune 0 --film-grain 0 --enable-tpl-la 1 --enable-overlays 1 --aq-mode 1 --lp 2" \
               --audio-params "-c:a libopus -b:a ${AUDIO_BR} -vbr on" \
             &
           DOCKER_PID=$!
 
-          # Poll av1an's done.json every 30s and print plain-text progress
-          # (GitHub Actions swallows \r rewrites, so this is the only visible output)
+          # Poll av1an's done.json every 30s — now readable on the host
+          # because the temp dir is mounted from $PWD/av1an-tmp.
           START_TS=$SECONDS
           while kill -0 $DOCKER_PID 2>/dev/null; do
             sleep 30
-            DONE=$(find . -name "done.json" 2>/dev/null | head -1 | xargs python3 -c "
-          import sys, json
+            DONE=$(python3 -c "
+          import json
           try:
-              d = json.load(open(sys.argv[1]))
+              d = json.load(open('$PWD/av1an-tmp/done.json'))
               print(len(d.get('done', {})))
           except Exception:
               print('?')
