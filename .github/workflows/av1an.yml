@@ -1,0 +1,52 @@
+name: Ultra-Low Size AV1an Encode
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Direct Link to Source Video'
+        required: true
+      output_name:
+        description: 'Output Filename (no .mkv)'
+        default: 'av1an_encoded'
+        required: true
+      crf:
+        description: 'Quality (CRF) - Higher is smaller size'
+        default: '55'
+        required: true
+
+jobs:
+  encode-video:
+    runs-on: ubuntu-latest
+    # We use a container that has all encoding tools pre-installed to save 5+ minutes of setup time
+    container:
+      image: masterofbeasts/av1an-vmaf:latest 
+
+    steps:
+      - name: Maximize Disk Space
+        run: |
+          rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
+          df -h
+
+      - name: Download Source
+        run: |
+          curl -g -L "${{ github.event.inputs.video_url }}" -o source_file.mkv
+
+      - name: Encode with Av1an
+        run: |
+          # Av1an uses scene detection to split the video and encode chunks in parallel.
+          # -w 4 matches the 4-core CPU of the GitHub runner.
+          av1an -i source_file.mkv \
+            -v " --preset 6 --crf ${{ github.event.inputs.crf }} --svtav1-params tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1:aq-mode=1 " \
+            -e svt-av1 \
+            --video-params " -vf hqdn3d=1.5:1.2:3:3,scale=-1:1080 " \
+            -a " -c:a libopus -b:a 32k -vbr on " \
+            -w 4 \
+            --pix-format yuv420p10le \
+            -o "${{ github.event.inputs.output_name }}.mkv"
+
+      - name: Upload Final Encoded Video
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.output_name }}
+          path: "./${{ github.event.inputs.output_name }}.mkv"
+          retention-days: 3
