@@ -10,7 +10,7 @@ on:
         default: 'av1an_encoded'
         required: true
       crf:
-        description: 'Quality (CRF) - Higher is smaller'
+        description: 'Quality (CRF) - 55+ for ultra-low size'
         default: '55'
         required: true
 
@@ -25,18 +25,18 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
           sudo apt-get clean
 
-      - name: Install Dependencies
+      - name: Install Dependencies (Wiki Recommended)
         run: |
           sudo apt-get update
-          # mkvtoolnix is essential for Av1an to merge chunks
+          # Av1an requires mkvtoolnix for the 'merge' phase and ffmpeg for 'split'
           sudo apt-get install -y ffmpeg mkvtoolnix libsvtav1-dev
 
       - name: Download Av1an via GitHub CLI
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Use the GitHub CLI to find and download the latest linux-x86_64 asset
-          # This avoids "404 Not Found" errors from broken hardcoded links
+          # The wiki points to the rust-av/Av1an repo. 
+          # We pull the latest Linux binary specifically.
           gh release download --repo rust-av/Av1an --pattern "*linux-x86_64*" --output av1an
           chmod +x av1an
           sudo mv av1an /usr/local/bin/av1an
@@ -46,10 +46,12 @@ jobs:
         run: |
           curl -g -L "${{ github.event.inputs.video_url }}" -o source_file.mkv
 
-      - name: Encode with Av1an
+      - name: Encode with Av1an (Scene-Based Parallelism)
         run: |
-          # -w 4: Uses the 4 CPUs of the standard runner
-          # --split-method ffmpeg: Easiest setup for standard runners
+          # Based on Av1an Wiki 'Best Practices':
+          # -w 4: 1 worker per CPU core on ubuntu-latest
+          # --pix-format: 10-bit is recommended even for 8-bit source to reduce compression artifacts
+          
           av1an -i source_file.mkv \
             -y \
             -e svt-av1 \
@@ -66,3 +68,4 @@ jobs:
         with:
           name: ${{ github.event.inputs.output_name }}
           path: "./${{ github.event.inputs.output_name }}.mkv"
+          retention-days: 3
