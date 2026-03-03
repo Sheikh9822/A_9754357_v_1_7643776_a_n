@@ -17,6 +17,8 @@ on:
 jobs:
   encode-video:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Maximize Disk Space
         run: |
@@ -26,14 +28,16 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          # Av1an requires ffmpeg for splitting and mkvtoolnix for merging
+          # mkvtoolnix is essential for Av1an to merge chunks
           sudo apt-get install -y ffmpeg mkvtoolnix libsvtav1-dev
 
-      - name: Download Av1an from Repo Releases
+      - name: Download Av1an via GitHub CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Fetching the specific x86_64-unknown-linux-musl binary from the 0.4.1 release
-          # This is the static binary that doesn't require extra libraries
-          curl -L https://github.com/rust-av/Av1an/releases/download/0.4.1/av1an-0.4.1-x86_64-unknown-linux-musl -o av1an
+          # Use the GitHub CLI to find and download the latest linux-x86_64 asset
+          # This avoids "404 Not Found" errors from broken hardcoded links
+          gh release download --repo rust-av/Av1an --pattern "*linux-x86_64*" --output av1an
           chmod +x av1an
           sudo mv av1an /usr/local/bin/av1an
           av1an --version
@@ -44,13 +48,8 @@ jobs:
 
       - name: Encode with Av1an
         run: |
-          # Per the repo docs:
-          # -i: input, -y: overwrite
-          # -e: encoder (svt-av1)
-          # -v: encoder params (passed to SVT-AV1)
-          # -w: workers (4 for GitHub Hosted Runners)
-          # --split-method: 'ffmpeg' is safest for minimal installs
-          
+          # -w 4: Uses the 4 CPUs of the standard runner
+          # --split-method ffmpeg: Easiest setup for standard runners
           av1an -i source_file.mkv \
             -y \
             -e svt-av1 \
