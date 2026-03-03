@@ -6,11 +6,11 @@ on:
         description: 'Direct Link to Source Video'
         required: true
       output_name:
-        description: 'Output Filename (no .mkv)'
+        description: 'Output Filename'
         default: 'av1an_encoded'
         required: true
       crf:
-        description: 'Quality (CRF) - Higher is smaller size'
+        description: 'Quality (CRF) - Higher is smaller'
         default: '55'
         required: true
 
@@ -23,17 +23,20 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
           sudo apt-get clean
 
-      - name: Install Dependencies (FFmpeg & SVT-AV1)
+      - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libsvtav1-dev mkvtoolnix
+          # Av1an requires ffmpeg for splitting and mkvtoolnix for merging
+          sudo apt-get install -y ffmpeg mkvtoolnix libsvtav1-dev
 
-      - name: Install Av1an Binary
+      - name: Download Av1an from Repo Releases
         run: |
-          # Downloading the latest static binary from the official repo
-          curl -L https://github.com/master-of-zen/Av1an/releases/download/0.4.1/av1an-0.4.1-linux-x86_64 -o av1an
+          # Fetching the specific x86_64-unknown-linux-musl binary from the 0.4.1 release
+          # This is the static binary that doesn't require extra libraries
+          curl -L https://github.com/rust-av/Av1an/releases/download/0.4.1/av1an-0.4.1-x86_64-unknown-linux-musl -o av1an
           chmod +x av1an
-          sudo mv av1an /usr/local/bin/
+          sudo mv av1an /usr/local/bin/av1an
+          av1an --version
 
       - name: Download Source
         run: |
@@ -41,19 +44,26 @@ jobs:
 
       - name: Encode with Av1an
         run: |
-          # Using 4 workers (-w 4) to utilize the GitHub runner's 4 CPUs
+          # Per the repo docs:
+          # -i: input, -y: overwrite
+          # -e: encoder (svt-av1)
+          # -v: encoder params (passed to SVT-AV1)
+          # -w: workers (4 for GitHub Hosted Runners)
+          # --split-method: 'ffmpeg' is safest for minimal installs
+          
           av1an -i source_file.mkv \
-            -v " --preset 6 --crf ${{ github.event.inputs.crf }} --svtav1-params tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1:aq-mode=1 " \
+            -y \
             -e svt-av1 \
+            -v " --preset 6 --crf ${{ github.event.inputs.crf }} --svtav1-params tune=0:film-grain=0:enable-tpl-la=1:enable-overlays=1:aq-mode=1 " \
             --video-params " -vf hqdn3d=1.5:1.2:3:3,scale=-1:1080 " \
             -a " -c:a libopus -b:a 32k -vbr on " \
             -w 4 \
+            --split-method ffmpeg \
             --pix-format yuv420p10le \
             -o "${{ github.event.inputs.output_name }}.mkv"
 
-      - name: Upload Final Encoded Video
+      - name: Upload Result
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event.inputs.output_name }}
           path: "./${{ github.event.inputs.output_name }}.mkv"
-          retention-days: 3
