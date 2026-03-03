@@ -59,8 +59,8 @@ on:
         required: false
 
       chunk_method:
-        description: 'Chunk / demux method  (lsmash | ffms2 | hybrid | select | segment)'
-        default: 'lsmash'
+        description: 'Chunk / demux method  (ffms2 | hybrid | select | segment)'
+        default: 'ffms2'
         required: false
 
       # ── Scene detection ─────────────────────────────────────────────────────
