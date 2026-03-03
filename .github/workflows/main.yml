@@ -1,4 +1,4 @@
-name: Ultra-Low Size AV1 Encode
+name: Ultra-Low Size AV1 Encode (With Testing)
 on:
   workflow_dispatch:
     inputs:
@@ -9,6 +9,14 @@ on:
         description: 'Output Filename (without extension)'
         default: 'encoded_video'
         required: true
+      start_time:
+        description: 'Start Time (HH:MM:SS)'
+        default: '00:00:00'
+        required: false
+      duration:
+        description: 'Duration (HH:MM:SS) - Leave 0 for full video'
+        default: '0'
+        required: false
 
 jobs:
   encode-video:
@@ -25,14 +33,20 @@ jobs:
 
       - name: Download and Encode
         run: |
-          # Use -g to handle brackets in workers.dev URLs
+          # Download using -g to handle [brackets]
           curl -g -L "${{ github.event.inputs.video_url }}" -o source_file.mkv
           
-          # Ultra-low size optimized command
-          # -map_metadata -1 strips hidden bloat
-          # aq-mode=0 and enable-tpl-la=0 force the lowest possible bitrate
-          ffmpeg -y -i source_file.mkv \
-            -map 0 -map_metadata -1 \
+          # Logic to handle "Full Video" vs "Clip"
+          DURATION_FLAG=""
+          if [ "${{ github.event.inputs.duration }}" != "0" ]; then
+            DURATION_FLAG="-t ${{ github.event.inputs.duration }}"
+          fi
+
+          # Encode command
+          # -ss BEFORE -i is faster (input seeking)
+          ffmpeg -y -ss ${{ github.event.inputs.start_time }} $DURATION_FLAG \
+            -i source_file.mkv \
+            -map 0 \
             -vf "hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
             -c:v libsvtav1 \
             -pix_fmt yuv420p10le \
