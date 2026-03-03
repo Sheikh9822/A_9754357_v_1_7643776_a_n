@@ -1,18 +1,17 @@
 # =============================================================================
-# Ultra-Low Size AV1 Encode — av1an Edition
+# Ultra-Low Size AV1 Encode — av1an Docker Edition
 # Runner: ubuntu-latest (4 vCPU / 16 GB RAM / 14 GB SSD, x64)
 #
-# av1an splits the source into scene-detected chunks and encodes them in
-# parallel, then concatenates the result — dramatically faster than a single
-# FFmpeg pass while preserving the same SVT-AV1 quality target.
+# Uses the official masterofzen/av1an Docker image — zero dependency setup.
+# The image ships av1an + SVT-AV1 + VapourSynth + L-SMASH Works pre-built.
+# av1an scene-detects and encodes all chunks in parallel across all 4 vCPUs.
 #
-# Required runner specs used by this workflow
+# Runner specs (free & unlimited on public repositories)
 # ┌─────────────┬──────┬───────────┬──────────┬──────────────────────────────┐
 # │ OS          │ vCPU │ RAM       │ Storage  │ Workflow label               │
 # ├─────────────┼──────┼───────────┼──────────┼──────────────────────────────┤
 # │ Linux       │  4   │ 16 GB     │ 14 GB    │ ubuntu-latest / ubuntu-24.04 │
 # └─────────────┴──────┴───────────┴──────────┴──────────────────────────────┘
-# Free and unlimited for public repositories.
 # =============================================================================
 
 name: Ultra-Low Size AV1 Encode (av1an)
@@ -71,7 +70,7 @@ on:
         required: false
 
       min_scene_len:
-        description: 'Minimum scene length in frames (avoid tiny chunks)'
+        description: 'Minimum scene length in frames (avoids tiny chunks)'
         default: '24'
         required: false
 
@@ -90,133 +89,36 @@ on:
 jobs:
   encode-video:
     name: 'av1an encode -> ${{ github.event.inputs.output_name }}.mkv'
-    runs-on: ubuntu-latest   # 4 vCPU · 16 GB RAM · 14 GB SSD (x64), free for public repos
+    runs-on: ubuntu-latest   # 4 vCPU · 16 GB RAM · 14 GB SSD (x64)
 
     steps:
 
-      # ── 1. Install system dependencies ──────────────────────────────────────
-      - name: Install System Dependencies
+      # ── 1. Free up disk space ────────────────────────────────────────────────
+      - name: Maximize Disk Space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/boost \
+            /usr/local/lib/android \
+            "$AGENT_TOOLSDIRECTORY"
+
+      # ── 2. Install host-side tools (ffmpeg for trim + ffprobe for verify) ───
+      - name: Install FFmpeg
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            ffmpeg \
-            mkvtoolnix \
-            python3 \
-            curl \
-            wget \
-            git \
-            unzip
+          sudo apt-get install -y --no-install-recommends ffmpeg mkvtoolnix
 
-      # ── 3. Install av1an binary ──────────────────────────────────────────────
-      - name: Install av1an
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # Release asset: raw static musl binary (no archive needed).
-          # Primary: gh CLI — always present on GitHub-hosted runners.
-          # Fallback: curl + GitHub API with auth token to avoid rate limits.
-          ASSET_NAME="av1an-x86_64-unknown-linux-musl"
+      # ── 3. Pull av1an Docker image ───────────────────────────────────────────
+      # masterofzen/av1an:latest bundles av1an + SVT-AV1 + VapourSynth +
+      # L-SMASH Works — no manual dependency installs needed.
+      - name: Pull av1an Docker Image
+        run: docker pull masterofzen/av1an:latest
 
-          echo "Downloading $ASSET_NAME..."
-          if gh release download \
-              --repo rust-av/Av1an \
-              --pattern "$ASSET_NAME" \
-              --dir /tmp 2>/dev/null; then
-            echo "gh CLI download succeeded."
-          else
-            echo "gh CLI failed — falling back to API resolution..."
-            AV1AN_URL=$(
-              curl -fsSL \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                https://api.github.com/repos/rust-av/Av1an/releases/latest \
-              | python3 -c "
-          import sys, json
-          data = json.load(sys.stdin)
-          for a in data.get('assets', []):
-              if a['name'] == 'av1an-x86_64-unknown-linux-musl':
-                  print(a['browser_download_url'])
-                  break
-          "
-            )
-            if [ -z "$AV1AN_URL" ]; then
-              echo "::error::Could not locate av1an asset in latest release"
-              exit 1
-            fi
-            echo "Resolved URL: $AV1AN_URL"
-            curl -fsSL "$AV1AN_URL" -o "/tmp/$ASSET_NAME"
-          fi
-
-          sudo install -m 755 "/tmp/$ASSET_NAME" /usr/local/bin/av1an
-          echo "=== av1an version ==="
-          av1an --version
-
-      # ── 4. Install SVT-AV1 encoder binary ───────────────────────────────────
-      - name: Install SVT-AV1
-        run: |
-          # Try latest release binary first
-          SVT_URL=$(
-            curl -fsSL https://api.github.com/repos/AOMediaCodec/SVT-AV1/releases/latest \
-            | python3 -c "
-          import sys, json
-          data = json.load(sys.stdin)
-          for a in data['assets']:
-              n = a['name'].lower()
-              if 'linux' in n and n.endswith('.tar.gz'):
-                  print(a['browser_download_url'])
-                  break
-          " 2>/dev/null || echo ""
-          )
-
-          if [ -n "$SVT_URL" ]; then
-            curl -fsSL "$SVT_URL" -o /tmp/svtav1.tar.gz
-            tar -xzf /tmp/svtav1.tar.gz -C /tmp
-            SVT_BIN=$(find /tmp -name "SvtAv1EncApp" -type f 2>/dev/null | head -1)
-            [ -n "$SVT_BIN" ] && sudo install -m 755 "$SVT_BIN" /usr/local/bin/SvtAv1EncApp && \
-              echo "Installed SVT-AV1 from upstream release" && SvtAv1EncApp --version && exit 0
-          fi
-
-          # Fallback: apt package (may be an older version)
-          echo "Falling back to apt svt-av1..."
-          sudo apt-get install -y svt-av1 || true
-          SvtAv1EncApp --version || true
-
-      # ── 5. Install L-SMASH Works VapourSynth plugin (enables lsmash chunks) ─
-      - name: Install VapourSynth + L-SMASH Works
-        run: |
-          # Install VapourSynth from pip (static wheel, no compile needed)
-          pip3 install vapoursynth --break-system-packages 2>/dev/null || \
-          pip3 install vapoursynth 2>/dev/null || \
-          sudo apt-get install -y vapoursynth 2>/dev/null || true
-
-          VS_PLUGIN_DIR=$(python3 -c "
-          try:
-              import vapoursynth as vs
-              print(vs.get_plugins_ro())
-          except Exception:
-              print('/usr/lib/vapoursynth')
-          " 2>/dev/null)
-
-          sudo mkdir -p "$VS_PLUGIN_DIR"
-
-          # Download L-SMASH Works pre-built plugin
-          LSMASH_URL="https://github.com/AkarinVS/L-SMASH-Works/releases/download/vA.3j/LSMASHWorks-x86_64-Linux-GNU.tar.gz"
-          if curl -fsSL "$LSMASH_URL" -o /tmp/lsmash.tar.gz 2>/dev/null; then
-            tar -xzf /tmp/lsmash.tar.gz -C /tmp/lsmash_out 2>/dev/null || mkdir -p /tmp/lsmash_out
-            sudo cp /tmp/lsmash_out/*.so "$VS_PLUGIN_DIR/" 2>/dev/null && \
-              echo "L-SMASH Works installed to $VS_PLUGIN_DIR" || true
-          else
-            echo "::warning::L-SMASH Works download failed; chunk method may fall back"
-          fi
-
-          # Expose resolved chunk method for the encode step
-          CHUNK_INPUT="${{ github.event.inputs.chunk_method }}"
-          echo "RESOLVED_CHUNK=${CHUNK_INPUT:-lsmash}" >> "$GITHUB_ENV"
-
-      # ── 6. Download source video ─────────────────────────────────────────────
+      # ── 4. Download source video ─────────────────────────────────────────────
       - name: Download Source Video
         run: |
-          echo "=== Downloading source ==="
-          # -g disables glob so brackets in URLs are passed literally
+          # -g disables glob expansion so brackets in URLs pass through safely
           curl -g -L --retry 3 --retry-delay 5 \
             "${{ github.event.inputs.video_url }}" \
             -o source_raw.mkv
@@ -225,8 +127,8 @@ jobs:
           ls -lh source_raw.mkv
           ffprobe -v quiet -show_format -show_streams source_raw.mkv 2>&1 | head -50
 
-      # ── 7. Trim source (if requested) ────────────────────────────────────────
-      - name: Trim Source (optional)
+      # ── 5. Trim source (optional) ────────────────────────────────────────────
+      - name: Trim Source
         run: |
           START="${{ github.event.inputs.start_time }}"
           DURATION="${{ github.event.inputs.duration }}"
@@ -239,7 +141,7 @@ jobs:
             DURATION_FLAG=""
             [ "$DURATION" != "0" ] && DURATION_FLAG="-t $DURATION"
 
-            # Stream-copy trim; avoids re-encode at this stage
+            # Stream-copy trim; avoids a full re-encode at this stage
             ffmpeg -y \
               -ss "$START" $DURATION_FLAG \
               -i source_raw.mkv \
@@ -248,12 +150,11 @@ jobs:
               source.mkv
 
             rm source_raw.mkv
-            echo "=== Trimmed source size ==="
             ls -lh source.mkv
           fi
 
-      # ── 8. av1an parallel encode ─────────────────────────────────────────────
-      - name: Encode with av1an (SVT-AV1, chunked parallel)
+      # ── 6. Encode with av1an via Docker ──────────────────────────────────────
+      - name: Encode with av1an (Docker, SVT-AV1, chunked parallel)
         run: |
           CRF="${{ github.event.inputs.crf }}"
           PRESET="${{ github.event.inputs.preset }}"
@@ -264,27 +165,25 @@ jobs:
           AUDIO_BR="${{ github.event.inputs.audio_bitrate }}"
           OUTPUT="${{ github.event.inputs.output_name }}.mkv"
 
-          # ── Worker auto-detect ───────────────────────────────────────────────
-          # ubuntu-latest = 4 vCPU; reserve 1 for I/O, use 3 for encoding chunks
+          # Worker auto-detect: ubuntu-latest = 4 vCPU
+          # Reserve 1 for Docker/I/O orchestration, hand the rest to av1an
           if [ "$WORKERS" = "0" ]; then
             VCPUS=$(nproc)
             WORKERS=$(( VCPUS > 1 ? VCPUS - 1 : 1 ))
             echo "Auto-detected ${VCPUS} vCPUs → using ${WORKERS} parallel workers"
           fi
 
-          # ── Optional photon-noise flag ───────────────────────────────────────
+          # Optional photon-noise flag
           PHOTON_FLAG=""
           [ "$PHOTON" != "0" ] && PHOTON_FLAG="--photon-noise ${PHOTON}"
 
-          # ── Chunk method (may have been updated by VapourSynth install step) ─
-          CHUNK="${RESOLVED_CHUNK:-lsmash}"
-
           echo "============================================"
+          echo "  Image      : masterofzen/av1an:latest"
           echo "  Encoder    : SVT-AV1"
           echo "  CRF        : $CRF"
           echo "  Preset     : $PRESET"
           echo "  Workers    : $WORKERS"
-          echo "  Chunk      : $CHUNK"
+          echo "  Chunk      : ${{ github.event.inputs.chunk_method }}"
           echo "  SC method  : $SC_METHOD"
           echo "  Min scene  : $MIN_SCENE frames"
           echo "  Audio br   : $AUDIO_BR"
@@ -292,34 +191,34 @@ jobs:
           echo "  Output     : $OUTPUT"
           echo "============================================"
 
-          av1an \
-            -i source.mkv \
-            -o "$OUTPUT" \
-            \
-            --encoder svt-av1 \
-            --workers "$WORKERS" \
-            --chunk-method "$CHUNK" \
-            --sc-method "$SC_METHOD" \
-            --min-scene-len "$MIN_SCENE" \
-            --extra-split 240 \
-            --concat mkvmerge \
-            --pix-format yuv420p10le \
-            --resume \
-            --verbose \
-            $PHOTON_FLAG \
-            \
-            --ffmpeg "-vf hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
-            \
-            --video-params \
-              "--preset ${PRESET} --crf ${CRF} --tune 0 --film-grain 0 --enable-tpl-la 1 --enable-overlays 1 --aq-mode 1" \
-            \
-            --audio-params \
-              "-c:a libopus -b:a ${AUDIO_BR} -vbr on"
+          # Mount $PWD as /videos inside the container.
+          # --user preserves file ownership so the runner can read the output.
+          # --privileged is required by av1an for mkvmerge concat.
+          docker run --rm --privileged \
+            --user "$(id -u):$(id -g)" \
+            -v "$PWD:/videos" \
+            masterofzen/av1an:latest \
+              -i /videos/source.mkv \
+              -o "/videos/${OUTPUT}" \
+              --encoder svt-av1 \
+              --workers "$WORKERS" \
+              --chunk-method "${{ github.event.inputs.chunk_method }}" \
+              --sc-method "$SC_METHOD" \
+              --min-scene-len "$MIN_SCENE" \
+              --extra-split 240 \
+              --concat mkvmerge \
+              --pix-format yuv420p10le \
+              --resume \
+              --verbose \
+              $PHOTON_FLAG \
+              --ffmpeg "-vf hqdn3d=1.5:1.2:3:3,scale=-1:1080" \
+              --video-params "--preset ${PRESET} --crf ${CRF} --tune 0 --film-grain 0 --enable-tpl-la 1 --enable-overlays 1 --aq-mode 1" \
+              --audio-params "-c:a libopus -b:a ${AUDIO_BR} -vbr on"
 
           echo "=== Encode complete ==="
           ls -lh "$OUTPUT"
 
-      # ── 9. Stats & verification ──────────────────────────────────────────────
+      # ── 7. Verify output & print encode report ───────────────────────────────
       - name: Verify Output & Print Encode Report
         run: |
           OUTPUT="${{ github.event.inputs.output_name }}.mkv"
@@ -331,34 +230,28 @@ jobs:
 
           SOURCE_BYTES=$(stat -c%s source.mkv 2>/dev/null || echo 0)
           OUTPUT_BYTES=$(stat -c%s "$OUTPUT")
-
           RATIO=$(python3 -c "
           s, o = $SOURCE_BYTES, $OUTPUT_BYTES
           print(f'{o/s*100:.1f}%' if s else 'N/A')
           ")
 
-          SOURCE_HUMAN=$(numfmt --to=iec $SOURCE_BYTES  2>/dev/null || echo "${SOURCE_BYTES} bytes")
-          OUTPUT_HUMAN=$(numfmt --to=iec $OUTPUT_BYTES  2>/dev/null || echo "${OUTPUT_BYTES} bytes")
-
           echo "============================================"
-          echo "  Source size  : $SOURCE_HUMAN"
-          echo "  Output size  : $OUTPUT_HUMAN"
-          echo "  Compression  : $RATIO of original"
+          echo "  Source  : $(numfmt --to=iec $SOURCE_BYTES)"
+          echo "  Output  : $(numfmt --to=iec $OUTPUT_BYTES)"
+          echo "  Ratio   : $RATIO of original"
           echo "============================================"
-
-          echo "=== Stream info ==="
           ffprobe -v quiet \
             -show_streams -show_format \
             -of default=noprint_wrappers=1 \
             "$OUTPUT" 2>&1 | \
             grep -E 'codec_name|width|height|r_frame_rate|bit_rate|duration|size|channel'
 
-      # ── 10. Upload artifact ──────────────────────────────────────────────────
+      # ── 8. Upload artifact ───────────────────────────────────────────────────
       - name: Upload Encoded Video
         uses: actions/upload-artifact@v4
         with:
           name: 'Encoded-Output-File'
-          # Wildcard path avoids bracket/special-char expansion issues
+          # Wildcard avoids bracket/special-char expansion issues in the path
           path: './*.mkv'
           if-no-files-found: error
           retention-days: 3
